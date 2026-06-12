@@ -1,0 +1,2 @@
+name,email,department,gender,mobile,password,role
+Test User,test10@example.com,CSE,Male,1234567890,pass,Student

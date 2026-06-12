@@ -1,0 +1,171 @@
+import { useState, useEffect } from 'react';
+import { getSubjects, addSubject, updateSubject, deleteSubject } from '../../api/adminApi';
+import BulkUpload from './BulkUpload';
+
+export default function SubjectsManage() {
+  const [subjects, setSubjects] = useState([]);
+  const [form, setForm] = useState({ name: '', code: '', credits: 0, department: '', regulation: '', year: 0, semester: 0, subjectType: 'Theory', assignedFaculty: '' });
+  const [search, setSearch] = useState('');
+  const [deptFilter, setDeptFilter] = useState('');
+  const [semFilter, setSemFilter] = useState('');
+
+  useEffect(() => {
+    fetchSubjects();
+  }, []);
+
+  const fetchSubjects = async () => {
+    try {
+      const res = await getSubjects();
+      setSubjects(res.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await addSubject({
+        ...form,
+        credits: Number(form.credits)
+      });
+      setForm({ name: '', code: '', credits: 0, department: '', regulation: '', year: 0, semester: 0, subjectType: 'Theory', assignedFaculty: '' });
+      fetchSubjects();
+    } catch (err) {
+      alert('Error adding subject');
+    }
+  };
+
+  const handleEdit = async (subject) => {
+    const name = prompt('Subject name', subject.name);
+    if (!name) return;
+    const code = prompt('Subject code', subject.code);
+    if (!code) return;
+    const department = prompt('Department', subject.department);
+    const year = prompt('Year', subject.year || '');
+    const semester = prompt('Semester', subject.semester || '');
+    const subjectType = prompt('Type (Theory/Lab)', subject.subjectType || 'Theory');
+    
+    try {
+      await updateSubject(subject._id, { name, code, department, year, semester, subjectType });
+      fetchSubjects();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error updating subject');
+    }
+  };
+
+  const handleDelete = async (subject) => {
+    if (!window.confirm(`Delete subject ${subject.name}?`)) return;
+    try {
+      await deleteSubject(subject._id);
+      fetchSubjects();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error deleting subject');
+    }
+  };
+
+  const handleToggleActive = async (subject) => {
+    try {
+      await updateSubject(subject._id, { isActive: !subject.isActive });
+      fetchSubjects();
+    } catch (err) {
+      alert('Error updating status');
+    }
+  };
+
+  const filteredSubjects = subjects.filter(s => {
+    const matchesSearch = search === '' || s.name.toLowerCase().includes(search.toLowerCase()) || s.code.toLowerCase().includes(search.toLowerCase());
+    const matchesDept = deptFilter === '' || s.department === deptFilter;
+    const matchesSem = semFilter === '' || s.semester === semFilter;
+    return matchesSearch && matchesDept && matchesSem;
+  });
+
+  const uniqueDepts = [...new Set(subjects.map(s => s.department).filter(Boolean))];
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold mb-4 text-slate-800">Subject Management</h2>
+      
+      <BulkUpload type="subjects" onUploadSuccess={fetchSubjects} />
+
+      <form onSubmit={handleSubmit} className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 mb-8 grid grid-cols-1 md:grid-cols-4 gap-4">
+        <input required placeholder="Subject Name" value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="border p-2 rounded" />
+        <input required placeholder="Subject Code" value={form.code} onChange={e => setForm({...form, code: e.target.value})} className="border p-2 rounded font-mono" />
+        <input required type="number" placeholder="Credits" value={form.credits} onChange={e => setForm({...form, credits: e.target.value})} className="border p-2 rounded" />
+        <input required placeholder="Department" value={form.department} onChange={e => setForm({...form, department: e.target.value})} className="border p-2 rounded" />
+        
+        <input placeholder="Regulation (e.g. 2021)" value={form.regulation} onChange={e => setForm({...form, regulation: e.target.value})} className="border p-2 rounded" />
+        <input placeholder="Year" value={form.year} onChange={e => setForm({...form, year: e.target.value})} className="border p-2 rounded" />
+        <input placeholder="Semester" value={form.semester} onChange={e => setForm({...form, semester: e.target.value})} className="border p-2 rounded" />
+        <select value={form.subjectType} onChange={e => setForm({...form, subjectType: e.target.value})} className="border p-2 rounded">
+           <option value="Theory">Theory</option>
+           <option value="Lab">Lab</option>
+        </select>
+        <button type="submit" className="bg-indigo-600 text-white p-2 rounded md:col-span-4 hover:bg-indigo-700 transition font-medium">Add Subject</button>
+      </form>
+
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-6 flex flex-wrap gap-4">
+         <input type="text" placeholder="Search code or name..." value={search} onChange={(e) => setSearch(e.target.value)} className="border p-2 rounded w-full md:w-64" />
+         <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)} className="border p-2 rounded">
+            <option value="">All Departments</option>
+            {uniqueDepts.map(d => <option key={d} value={d}>{d}</option>)}
+         </select>
+         <select value={semFilter} onChange={(e) => setSemFilter(e.target.value)} className="border p-2 rounded">
+            <option value="">All Semesters</option>
+            <option value="1">Semester 1</option>
+            <option value="2">Semester 2</option>
+            <option value="3">Semester 3</option>
+            <option value="4">Semester 4</option>
+            <option value="5">Semester 5</option>
+            <option value="6">Semester 6</option>
+            <option value="7">Semester 7</option>
+            <option value="8">Semester 8</option>
+         </select>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-slate-50 border-b">
+            <tr>
+              <th className="p-4">Code</th>
+              <th className="p-4">Name</th>
+              <th className="p-4">Department</th>
+              <th className="p-4">Sem/Year</th>
+              <th className="p-4">Type</th>
+              <th className="p-4">Status</th>
+              <th className="p-4">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredSubjects.map(s => (
+              <tr key={s._id} className="border-b hover:bg-slate-50">
+                <td className="p-4 font-mono font-bold text-slate-700">{s.code}</td>
+                <td className="p-4">{s.name}</td>
+                <td className="p-4">{s.department}</td>
+                <td className="p-4">{s.semester ? `Sem ${s.semester}` : '-'} / {s.year ? `Yr ${s.year}` : '-'}</td>
+                <td className="p-4"><span className={`px-2 py-1 rounded text-xs font-bold ${s.subjectType === 'Lab' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'}`}>{s.subjectType || 'Theory'}</span></td>
+                <td className="p-4">
+                  <span className={`px-2 py-1 rounded text-xs font-bold ${s.isActive !== false ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                    {s.isActive !== false ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td className="p-4 space-x-2">
+                  <button onClick={() => handleToggleActive(s)} className={`px-3 py-1.5 text-xs font-bold rounded ${s.isActive !== false ? 'bg-orange-100 text-orange-800' : 'bg-green-100 text-green-800'}`}>
+                    {s.isActive !== false ? 'Deactivate' : 'Activate'}
+                  </button>
+                  <button onClick={() => handleEdit(s)} className="px-3 py-1.5 bg-yellow-100 text-yellow-800 rounded text-xs font-bold">Edit</button>
+                  <button onClick={() => handleDelete(s)} className="px-3 py-1.5 bg-red-100 text-red-800 rounded text-xs font-bold">Delete</button>
+                </td>
+              </tr>
+            ))}
+            {filteredSubjects.length === 0 && (
+              <tr>
+                <td className="p-4 text-slate-500 italic text-center" colSpan={7}>No subjects found.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
