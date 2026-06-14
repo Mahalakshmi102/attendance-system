@@ -1,7 +1,7 @@
 const trimTrailingSlash = (value) => value.replace(/\/+$/, '');
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL;
-const defaultLocalBaseUrl = 'http://localhost:5000';
+const defaultLocalBaseUrl = 'https://attendance-system-yygf.onrender.com';
 
 export const API_BASE_URL = trimTrailingSlash(configuredBaseUrl || defaultLocalBaseUrl);
 
