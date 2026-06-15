@@ -29,9 +29,38 @@ export default function AttendanceMonitoring({ departmentOnly }) {
     period: 'H1'
   });
 
-  const [activeSubTab, setActiveSubTab] = useState('mark'); // 'mark' or 'logs'
+  const [activeSubTab, setActiveSubTab] = useState(user?.role === 'HoD' ? 'history' : 'mark'); // 'mark' or 'logs' or 'history'
   const [editLogs, setEditLogs] = useState([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+
+  // History and summary stats states
+  const [historySummary, setHistorySummary] = useState(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [selectedFacultyId, setSelectedFacultyId] = useState('');
+
+  const fetchHistorySummary = async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await axios.get(apiUrl('/api/admin/attendance/history-summary'), {
+        params: {
+          facultyId: selectedFacultyId || undefined,
+          department: filters.department || undefined
+        },
+        headers: withAuthHeader()
+      });
+      setHistorySummary(res.data);
+    } catch (error) {
+      console.error('Failed to load history summary', error);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSubTab === 'history') {
+      fetchHistorySummary();
+    }
+  }, [activeSubTab, selectedFacultyId, filters.department]);
 
   const fetchEditLogs = async () => {
     setLoadingLogs(true);
@@ -266,17 +295,25 @@ export default function AttendanceMonitoring({ departmentOnly }) {
           <p className="text-xs font-semibold text-slate-500 mt-1">Mark daily check-ins, take period-wise attendance, and trace modification audit trails.</p>
         </div>
         <div className="flex gap-2">
-          <button 
-            onClick={() => setActiveSubTab('mark')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm ${activeSubTab === 'mark' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-          >
-            Mark & Edit Attendance
-          </button>
+          {user?.role !== 'HoD' && (
+            <button 
+              onClick={() => setActiveSubTab('mark')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm ${activeSubTab === 'mark' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+            >
+              Mark & Edit Attendance
+            </button>
+          )}
           <button 
             onClick={() => setActiveSubTab('logs')}
             className={`px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm ${activeSubTab === 'logs' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
           >
             Attendance Edit Logs
+          </button>
+          <button 
+            onClick={() => setActiveSubTab('history')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition shadow-sm ${activeSubTab === 'history' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+          >
+            Attendance History & Summary
           </button>
         </div>
       </div>
@@ -338,6 +375,178 @@ export default function AttendanceMonitoring({ departmentOnly }) {
                 </tbody>
               </table>
             </div>
+          )}
+        </div>
+      ) : activeSubTab === 'history' ? (
+        <div className="space-y-6">
+          {/* Filters & Dropdowns */}
+          <div className="bg-white p-6 rounded-2xl shadow-[0_2px_12px_-4px_rgba(0,0,0,0.05)] border border-slate-100 flex flex-col md:flex-row justify-between items-end gap-4">
+            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
+              {!departmentOnly && (
+                <div className="flex flex-col">
+                  <label className="text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wider">Department</label>
+                  <select 
+                    name="department" 
+                    value={filters.department} 
+                    onChange={handleFilterChange} 
+                    className="border border-slate-200 rounded-lg p-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500"
+                  >
+                    <option value="">All Departments</option>
+                    <option value="CSE">Computer Science & Engineering</option>
+                    <option value="ECE">Electronics & Communication</option>
+                    <option value="MECH">Mechanical Engineering</option>
+                    <option value="IT">Information Technology</option>
+                  </select>
+                </div>
+              )}
+              <div className="flex flex-col">
+                <label className="text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wider">Faculty Member</label>
+                <select 
+                  value={selectedFacultyId} 
+                  onChange={e => setSelectedFacultyId(e.target.value)} 
+                  className="border border-slate-200 rounded-lg p-2.5 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500"
+                >
+                  <option value="">-- All Faculty (System Summary) --</option>
+                  {faculties.map(fac => (
+                    <option key={fac._id} value={fac._id}>{fac.name} ({fac.department})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <button 
+              onClick={fetchHistorySummary}
+              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs uppercase transition shadow-md shadow-indigo-500/20 flex items-center gap-2 cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" /> Refresh Data
+            </button>
+          </div>
+
+          {loadingHistory ? (
+            <div className="p-12 text-center text-slate-500 font-bold text-xs animate-pulse bg-white rounded-2xl border border-slate-100 shadow-sm">
+              Loading summary statistics and session logs...
+            </div>
+          ) : (
+            <>
+              {/* Summary Metrics Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Total Hours Assigned */}
+                <div className="bg-[#f0f7ff] border border-blue-100 p-5 rounded-2xl flex items-center gap-4 shadow-sm">
+                  <div className="bg-blue-100 p-3 rounded-xl text-blue-600">
+                    <Clock className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black text-slate-450 uppercase tracking-wide">Total Hours Assigned</span>
+                    <p className="text-2xl font-black text-slate-800 mt-0.5">{historySummary?.stats?.totalHoursAssigned || 0}</p>
+                    <p className="text-[10px] font-semibold text-slate-400">Timetable slots</p>
+                  </div>
+                </div>
+
+                {/* Total Attendance Completed */}
+                <div className="bg-[#f0fdf4] border border-emerald-100 p-5 rounded-2xl flex items-center gap-4 shadow-sm">
+                  <div className="bg-emerald-100 p-3 rounded-xl text-emerald-600">
+                    <CheckCircle className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black text-slate-450 uppercase tracking-wide">Attendance Completed</span>
+                    <p className="text-2xl font-black text-slate-800 mt-0.5">{historySummary?.stats?.totalAttendanceCompleted || 0}</p>
+                    <p className="text-[10px] font-semibold text-emerald-600">Locked sessions</p>
+                  </div>
+                </div>
+
+                {/* Total Hours Finished */}
+                <div className="bg-[#f0f9ff] border border-sky-100 p-5 rounded-2xl flex items-center gap-4 shadow-sm">
+                  <div className="bg-sky-100 p-3 rounded-xl text-sky-600">
+                    <Users className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black text-slate-450 uppercase tracking-wide">Total Hours Finished</span>
+                    <p className="text-2xl font-black text-slate-800 mt-0.5">{historySummary?.stats?.totalHoursFinished || 0}</p>
+                    <p className="text-[10px] font-semibold text-sky-600">Conducted classes</p>
+                  </div>
+                </div>
+
+                {/* Pending Attendance Hours */}
+                <div className="bg-[#fff1f2] border border-rose-100 p-5 rounded-2xl flex items-center gap-4 shadow-sm">
+                  <div className="bg-rose-100 p-3 rounded-xl text-rose-600">
+                    <Clock className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black text-slate-450 uppercase tracking-wide">Pending Attendance</span>
+                    <p className="text-2xl font-black text-rose-600 mt-0.5">{historySummary?.stats?.pendingAttendanceHours || 0}</p>
+                    <p className="text-[10px] font-semibold text-rose-500">Needs lock/action</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* History Table */}
+              <div className="bg-white rounded-2xl shadow-[0_2px_12px_-4px_rgba(0,0,0,0.05)] border border-slate-100 overflow-hidden">
+                <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+                  <h3 className="text-sm font-extrabold text-slate-800">Conducted Sessions History Log</h3>
+                </div>
+                <div className="overflow-x-auto max-h-[500px]">
+                  <table className="w-full text-center text-xs whitespace-nowrap">
+                    <thead className="bg-slate-50 text-slate-500 font-bold sticky top-0 shadow-sm border-b border-slate-200">
+                      <tr>
+                        <th className="p-4 text-left border-r border-slate-100">Date</th>
+                        <th className="p-4 border-r border-slate-100">Period/Hour</th>
+                        <th className="p-4 text-left border-r border-slate-100">Subject</th>
+                        <th className="p-4 text-left border-r border-slate-100">Class/Section</th>
+                        <th className="p-4 text-left border-r border-slate-100">Faculty member</th>
+                        <th className="p-4 border-r border-slate-100">Average Attendance</th>
+                        <th className="p-4 border-r border-slate-100">Submission Time</th>
+                        <th className="p-4">Submission Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-semibold text-slate-650">
+                      {historySummary?.sessionsList?.map((s) => (
+                        <tr key={s._id} className="hover:bg-slate-50/50 transition">
+                          <td className="p-4 text-left border-r border-slate-100 text-xs">
+                            {new Date(s.date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </td>
+                          <td className="p-4 border-r border-slate-100 text-xs font-mono font-bold text-slate-800">
+                            {s.period}
+                          </td>
+                          <td className="p-4 text-left border-r border-slate-100 text-xs">
+                            <span className="block font-black text-slate-800">{s.subjectCode}</span>
+                            <span className="block text-[10px] text-slate-400 mt-0.5">{s.subjectName}</span>
+                          </td>
+                          <td className="p-4 text-left border-r border-slate-100 text-xs">
+                            {s.class}
+                          </td>
+                          <td className="p-4 text-left border-r border-slate-100 text-xs font-bold text-slate-800">
+                            {s.facultyName}
+                          </td>
+                          <td className="p-4 border-r border-slate-100 text-xs">
+                            {s.locked ? (
+                              <span className="text-indigo-655 font-black">{s.attendancePercentage}%</span>
+                            ) : (
+                              <span className="text-slate-400 italic">Un-finalized</span>
+                            )}
+                          </td>
+                          <td className="p-4 border-r border-slate-100 text-xs text-slate-500">
+                            {s.locked ? new Date(s.submissionTime).toLocaleString() : '-'}
+                          </td>
+                          <td className="p-4">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              s.locked ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700 animate-pulse'
+                            }`}>
+                              {s.locked ? 'Submitted' : 'Pending'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                      {(!historySummary?.sessionsList || historySummary.sessionsList.length === 0) && (
+                        <tr>
+                          <td colSpan="8" className="p-10 text-center text-slate-450 italic font-semibold">
+                            No attendance entry history logs recorded matching selection.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
           )}
         </div>
       ) : (

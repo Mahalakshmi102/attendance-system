@@ -4,15 +4,20 @@ const attendanceSchema = new mongoose.Schema({
   session: { type: mongoose.Schema.Types.ObjectId, ref: 'Session', required: true },
   student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   subject: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
+  faculty: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Store Faculty ID
+  department: { type: String }, // Store Class/Section Details
+  year: { type: String },
+  semester: { type: String },
+  section: { type: String },
   date: { type: Date, required: true },
   timestamp: { type: Date, default: Date.now },
   markedAt: { type: Date, default: Date.now },
-  status: { type: String, enum: ['Present', 'Absent', 'Late', 'On-Duty'], default: 'Present' },
+  status: { type: String, enum: ['Present', 'Absent', 'Late', 'On-Duty', 'On Duty', 'Medical Leave', 'Casual Leave'], default: 'Present' },
   markedBy: { type: String, enum: ['Student', 'Faculty', 'Admin'], default: 'Student' },
   entryType: { type: String, enum: ['QR', 'Manual'], default: 'QR' },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   remarks: { type: String, trim: true, maxlength: 300 },
-  period: { type: String },
+  period: { type: String }, // Period Number
   locked: { type: Boolean, default: false }
 }, { timestamps: true });
 

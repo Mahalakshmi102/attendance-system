@@ -1,17 +1,23 @@
 import { useState, useEffect } from 'react';
-import { getSubjects, addSubject, updateSubject, deleteSubject } from '../../api/adminApi';
+import { getSubjects, addSubject, updateSubject, deleteSubject, bulkDeleteSubjects } from '../../api/adminApi';
 import BulkUpload from './BulkUpload';
 
 export default function SubjectsManage() {
   const [subjects, setSubjects] = useState([]);
   const [form, setForm] = useState({ name: '', code: '', credits: 0, department: '', regulation: '', year: 0, semester: 0, subjectType: 'Theory', assignedFaculty: '' });
+  const [editingId, setEditingId] = useState(null);
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
   const [semFilter, setSemFilter] = useState('');
+  const [selectedIds, setSelectedIds] = useState([]);
 
   useEffect(() => {
     fetchSubjects();
   }, []);
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [search, deptFilter, semFilter, subjects]);
 
   const fetchSubjects = async () => {
     try {
@@ -25,33 +31,40 @@ export default function SubjectsManage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await addSubject({
-        ...form,
-        credits: Number(form.credits)
-      });
+      if (editingId) {
+        await updateSubject(editingId, {
+          ...form,
+          credits: Number(form.credits)
+        });
+        setEditingId(null);
+      } else {
+        await addSubject({
+          ...form,
+          credits: Number(form.credits)
+        });
+      }
       setForm({ name: '', code: '', credits: 0, department: '', regulation: '', year: 0, semester: 0, subjectType: 'Theory', assignedFaculty: '' });
       fetchSubjects();
     } catch (err) {
-      alert('Error adding subject');
+      alert(editingId ? 'Error updating subject' : 'Error adding subject');
     }
   };
 
-  const handleEdit = async (subject) => {
-    const name = prompt('Subject name', subject.name);
-    if (!name) return;
-    const code = prompt('Subject code', subject.code);
-    if (!code) return;
-    const department = prompt('Department', subject.department);
-    const year = prompt('Year', subject.year || '');
-    const semester = prompt('Semester', subject.semester || '');
-    const subjectType = prompt('Type (Theory/Lab)', subject.subjectType || 'Theory');
-    
-    try {
-      await updateSubject(subject._id, { name, code, department, year, semester, subjectType });
-      fetchSubjects();
-    } catch (err) {
-      alert(err.response?.data?.message || 'Error updating subject');
-    }
+  const handleEdit = (subject) => {
+    setEditingId(subject._id);
+    setForm({
+      name: subject.name || '',
+      code: subject.code || '',
+      credits: subject.credits || 0,
+      department: subject.department || '',
+      regulation: subject.regulation || '',
+      year: subject.year || 0,
+      semester: subject.semester || 0,
+      subjectType: subject.subjectType || 'Theory',
+      assignedFaculty: subject.assignedFaculty || ''
+    });
+    // Scroll smoothly to the form for better UX
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDelete = async (subject) => {
@@ -61,6 +74,34 @@ export default function SubjectsManage() {
       fetchSubjects();
     } catch (err) {
       alert(err.response?.data?.message || 'Error deleting subject');
+    }
+  };
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedIds(prev => Array.from(new Set([...prev, ...filteredSubjects.map(s => s._id)])));
+    } else {
+      setSelectedIds(prev => prev.filter(id => !filteredSubjects.some(s => s._id === id)));
+    }
+  };
+
+  const handleSelectRow = (id) => {
+    setSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Are you sure you want to permanently delete the ${selectedIds.length} selected subjects?`)) return;
+
+    try {
+      await bulkDeleteSubjects(selectedIds);
+      alert('Selected subjects deleted successfully!');
+      setSelectedIds([]);
+      fetchSubjects();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error deleting selected subjects');
     }
   };
 
@@ -101,10 +142,26 @@ export default function SubjectsManage() {
            <option value="Theory">Theory</option>
            <option value="Lab">Lab</option>
         </select>
-        <button type="submit" className="bg-indigo-600 text-white p-2 rounded md:col-span-4 hover:bg-indigo-700 transition font-medium">Add Subject</button>
+        <div className="md:col-span-4 flex gap-2">
+          <button type="submit" className="flex-grow bg-indigo-600 text-white p-2 rounded hover:bg-indigo-700 transition font-medium">
+            {editingId ? 'Update Subject' : 'Add Subject'}
+          </button>
+          {editingId && (
+            <button 
+              type="button" 
+              onClick={() => {
+                setEditingId(null);
+                setForm({ name: '', code: '', credits: 0, department: '', regulation: '', year: 0, semester: 0, subjectType: 'Theory', assignedFaculty: '' });
+              }} 
+              className="bg-slate-200 text-slate-700 p-2 rounded hover:bg-slate-300 transition font-medium px-6"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       </form>
 
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-6 flex flex-wrap gap-4">
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-6 flex flex-wrap gap-4 items-center">
          <input type="text" placeholder="Search code or name..." value={search} onChange={(e) => setSearch(e.target.value)} className="border p-2 rounded w-full md:w-64" />
          <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)} className="border p-2 rounded">
             <option value="">All Departments</option>
@@ -121,12 +178,28 @@ export default function SubjectsManage() {
             <option value="7">Semester 7</option>
             <option value="8">Semester 8</option>
          </select>
+         {selectedIds.length > 0 && (
+           <button 
+             onClick={handleDeleteSelected}
+             className="bg-red-600 text-white px-5 py-2.5 rounded-lg font-bold hover:bg-red-750 transition flex items-center gap-1.5 shadow-md text-xs h-[38px]"
+           >
+             Delete Selected ({selectedIds.length})
+           </button>
+         )}
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 border-b">
             <tr>
+              <th className="p-4 text-center w-12">
+                <input 
+                  type="checkbox" 
+                  onChange={handleSelectAll} 
+                  checked={filteredSubjects.length > 0 && filteredSubjects.every(s => selectedIds.includes(s._id))}
+                  className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                />
+              </th>
               <th className="p-4">Code</th>
               <th className="p-4">Name</th>
               <th className="p-4">Department</th>
@@ -139,6 +212,14 @@ export default function SubjectsManage() {
           <tbody>
             {filteredSubjects.map(s => (
               <tr key={s._id} className="border-b hover:bg-slate-50">
+                <td className="p-4 text-center w-12">
+                  <input 
+                    type="checkbox" 
+                    checked={selectedIds.includes(s._id)} 
+                    onChange={() => handleSelectRow(s._id)}
+                    className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                  />
+                </td>
                 <td className="p-4 font-mono font-bold text-slate-700">{s.code}</td>
                 <td className="p-4">{s.name}</td>
                 <td className="p-4">{s.department}</td>

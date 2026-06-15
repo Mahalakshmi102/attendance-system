@@ -12,13 +12,16 @@ const {
   getFacultyAttendanceByDateRange,
   getFacultySubjectSummary,
   downloadFacultyReportCsv,
-  startSession
+  startSession,
+  getFacultyDashboardSummary,
+  startCustomSession
 } = require('../controllers/attendanceController');
 const { protect } = require('../middleware/authMiddleware');
 
 // Apply protect middleware to all routes in this file
 router.use(protect);
 
+router.get('/dashboard-summary', getFacultyDashboardSummary);
 router.get('/active', getActiveSession);
 router.post('/location', updateFacultyLocation);
 router.post('/mark', markAttendance); // For student scans
@@ -31,5 +34,6 @@ router.get('/faculty-date-range', getFacultyAttendanceByDateRange);
 router.get('/faculty-summary', getFacultySubjectSummary);
 router.get('/faculty-download', downloadFacultyReportCsv);
 router.post('/start', startSession);
+router.post('/start-custom', startCustomSession);
 
 module.exports = router;

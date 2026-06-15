@@ -84,7 +84,9 @@ export default function ApprovalsManage() {
                           ? 'bg-orange-100 text-orange-700' 
                           : req.targetModel === 'Attendance' 
                             ? 'bg-indigo-100 text-indigo-700' 
-                            : 'bg-emerald-100 text-emerald-700'
+                            : req.targetModel === 'PasswordReset'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-emerald-100 text-emerald-700'
                       }`}>
                         {req.targetModel}
                       </span>
@@ -93,15 +95,29 @@ export default function ApprovalsManage() {
                     <td className="p-4 text-slate-700">
                        <div className="text-xs">
                           {req.targetModel === 'Leave' ? (
-                            <div className="text-xs font-semibold text-slate-700 bg-orange-50/50 p-2 rounded-lg border border-orange-100/50 inline-block animate-pulse">
-                              <p className="text-orange-800 font-bold uppercase tracking-wide text-[9px] mb-0.5">{req.newValue?.leaveType || 'General'} Leave</p>
-                              <p className="text-[10px] text-slate-600">
-                                {req.newValue?.startDate ? new Date(req.newValue.startDate).toLocaleDateString() : 'N/A'} to{' '}
-                                {req.newValue?.endDate ? new Date(req.newValue.endDate).toLocaleDateString() : 'N/A'}
-                              </p>
-                            </div>
+                    <div className="text-xs font-semibold text-slate-700 bg-orange-50/50 p-2.5 rounded-lg border border-orange-100/50 inline-block">
+                      <p className="text-orange-800 font-bold uppercase tracking-wide text-[9px] mb-0.5">{req.newValue?.leaveType || 'General'} Leave</p>
+                      <p className="text-[10px] text-slate-600">
+                        {req.newValue?.startDate ? new Date(req.newValue.startDate).toLocaleDateString() : 'N/A'} to{' '}
+                        {req.newValue?.endDate ? new Date(req.newValue.endDate).toLocaleDateString() : 'N/A'}
+                      </p>
+                      {req.newValue?.proofImage && (
+                        <div className="mt-2">
+                          <p className="text-[9px] uppercase font-bold text-slate-400">Attached Proof:</p>
+                          <a href={req.newValue.proofImage} target="_blank" rel="noreferrer" className="inline-block mt-1">
+                            <img 
+                              src={req.newValue.proofImage} 
+                              alt="OD Proof" 
+                              className="max-h-24 max-w-full rounded-lg border border-slate-200 cursor-zoom-in hover:opacity-85 transition" 
+                            />
+                          </a>
+                        </div>
+                      )}
+                    </div>
                           ) : req.targetModel === 'Attendance' ? (
                             <span><span className="line-through text-red-400">{req.oldValue}</span> <span className="text-slate-400">→</span> <span className="text-emerald-600 font-bold">{req.newValue}</span></span>
+                          ) : req.targetModel === 'PasswordReset' ? (
+                            <span className="font-extrabold text-purple-700 bg-purple-50 px-2.5 py-1.5 rounded-lg border border-purple-200">Reset Password to DOB</span>
                           ) : (
                             <span>Old Total: {req.oldValue?.total || 0} <span className="text-slate-400">→</span> New Total: {req.newValue?.total || (Number(req.newValue?.internal) + Number(req.newValue?.external))}</span>
                           )}
@@ -152,10 +168,19 @@ export default function ApprovalsManage() {
                           ? 'bg-orange-100 text-orange-700' 
                           : req.targetModel === 'Attendance' 
                             ? 'bg-indigo-100 text-indigo-700' 
-                            : 'bg-emerald-100 text-emerald-700'
+                            : req.targetModel === 'PasswordReset'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-emerald-100 text-emerald-700'
                       }`}>
                         {req.targetModel}
                       </span>
+                      {req.targetModel === 'Leave' && req.newValue?.proofImage && (
+                        <div className="mt-1.5">
+                          <a href={req.newValue.proofImage} target="_blank" rel="noreferrer" className="text-[10px] text-blue-600 hover:text-blue-800 font-bold hover:underline">
+                            View Proof Image
+                          </a>
+                        </div>
+                      )}
                     </td>
                     <td className="p-4">
                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${req.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>

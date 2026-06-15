@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { apiUrl, withAuthHeader } from '../api/http';
 import { useAuth } from '../context/AuthContext';
+import StudentDetailsView from '../components/admin/StudentDetailsView';
 import NotificationBell from '../components/NotificationBell';
 import { 
   GraduationCap, BookOpen, Calculator, Bell, LogOut, AlertTriangle, TrendingUp, 
@@ -45,15 +46,18 @@ function StudentDashboard() {
     startDate: '',
     endDate: '',
     leaveType: 'Sick',
-    reason: ''
+    reason: '',
+    proofImage: ''
   });
 
   useEffect(() => {
-    fetchMyAttendance();
-    fetchTimetable();
-    fetchCalendar();
-    fetchNotifications();
-  }, []);
+    if (user?.id) {
+      fetchMyAttendance();
+      fetchTimetable();
+      fetchCalendar();
+      fetchNotifications();
+    }
+  }, [user?.id, user?.department, user?.year, user?.semester, user?.section]);
 
   useEffect(() => {
     if (activeTab === 'leave') {
@@ -199,7 +203,8 @@ function StudentDashboard() {
         newValue: {
           startDate: leaveForm.startDate,
           endDate: leaveForm.endDate,
-          leaveType: leaveForm.leaveType
+          leaveType: leaveForm.leaveType,
+          proofImage: leaveForm.proofImage
         }
       };
 
@@ -208,7 +213,7 @@ function StudentDashboard() {
       });
 
       setFormSuccess('Leave request submitted successfully to your HOD & Class Advisor!');
-      setLeaveForm({ startDate: '', endDate: '', leaveType: 'Sick', reason: '' });
+      setLeaveForm({ startDate: '', endDate: '', leaveType: 'Sick', reason: '', proofImage: '' });
       fetchMyRequests();
     } catch (err) {
       setFormError(err.response?.data?.message || 'Failed to submit leave request.');
@@ -228,7 +233,7 @@ function StudentDashboard() {
 
   // Render weekly class schedule timetable
   const renderTimetable = () => {
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const periods = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7'];
 
     return (
@@ -283,6 +288,45 @@ function StudentDashboard() {
     );
   };
 
+  // Render today's timetable list
+  const renderTodayTimetableList = () => {
+    const today = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date().getDay()];
+    const todaySlots = timetable.filter(t => t.dayOfWeek === today).sort((a, b) => a.period.localeCompare(b.period));
+
+    return (
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col h-[260px]">
+        <h3 className="font-extrabold text-slate-805 text-sm border-b pb-3 mb-4 flex justify-between items-center">
+          <span>Today's Class Schedule ({today})</span>
+          <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+            {todaySlots.length} Classes
+          </span>
+        </h3>
+        
+        <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar">
+          {todaySlots.map((slot, idx) => (
+            <div key={idx} className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between gap-3 text-xs hover:shadow-sm transition">
+              <div className="space-y-1">
+                <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 font-black rounded text-[9px]">
+                  {slot.period}
+                </span>
+                <p className="font-extrabold text-slate-700 mt-1">{slot.subject?.name}</p>
+                <p className="text-[9px] text-slate-400 font-bold uppercase">{slot.classroom} | Staff: {slot.faculty?.name}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[9px] text-slate-400 font-mono font-bold">{slot.startTime} - {slot.endTime}</p>
+              </div>
+            </div>
+          ))}
+          {todaySlots.length === 0 && (
+            <div className="h-full flex flex-col items-center justify-center text-slate-400 italic text-xs py-10 font-bold gap-2">
+              <span>No classes scheduled for today.</span>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const menuItems = [
     { id: 'overview', label: 'My Attendance', icon: TrendingUp },
     { id: 'timetable', label: 'Timetable Schedule', icon: Clock },
@@ -306,14 +350,14 @@ function StudentDashboard() {
       <aside className={`fixed inset-y-0 left-0 w-72 bg-white shadow-xl lg:shadow-[4px_0_24px_rgba(0,0,0,0.02)] flex flex-col z-30 transition-transform duration-300 transform lg:translate-x-0 lg:static ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <div className="p-8 flex items-center justify-between border-b border-slate-100">
+        <div className="p-6 flex items-center justify-between border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className="bg-emerald-600 p-2.5 rounded-xl shadow-lg shadow-emerald-200">
-              <GraduationCap className="text-white w-7 h-7" />
+            <div className="w-10 h-10 rounded-full border border-slate-200 bg-white p-0.5 flex items-center justify-center shadow-sm hover:scale-105 transition-transform duration-300">
+              <img src="/logo.jpg" alt="NIT Logo" className="w-full h-full object-contain rounded-full" />
             </div>
             <div>
-              <h1 className="text-xl font-extrabold text-slate-800 tracking-tight leading-tight">Student Portal</h1>
-              <p className="text-xs text-emerald-600 font-black tracking-wide uppercase mt-0.5">{user?.department || 'CSE'} Dept</p>
+              <h1 className="text-lg font-black text-slate-800 tracking-tight leading-tight">NITify</h1>
+              <p className="text-[10px] text-emerald-600 font-extrabold tracking-wide uppercase mt-0.5">Student Portal</p>
             </div>
           </div>
           {/* Close button for mobile sidebar */}
@@ -364,7 +408,7 @@ function StudentDashboard() {
         
         {/* Top Header */}
         <header className="bg-white/80 backdrop-blur-md border-b border-slate-100 px-4 py-4 md:px-10 md:py-5 flex items-center justify-between z-10">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             {/* Hamburger Toggle */}
             <button 
               className="lg:hidden p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-slate-800 transition"
@@ -372,7 +416,18 @@ function StudentDashboard() {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div>
+            
+            {/* Logo and App Name on Mobile View */}
+            <div className="flex items-center gap-2 lg:hidden">
+              <img src="/logo.jpg" alt="NIT Logo" className="w-8 h-8 object-contain rounded-full border border-slate-200 bg-white" />
+              <span className="text-base font-black bg-gradient-to-r from-blue-700 to-indigo-800 bg-clip-text text-transparent">NITify</span>
+              <span className="text-[9px] sm:text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md font-bold max-w-[100px] sm:max-w-[120px] truncate">
+                {menuItems.find(i => i.id === activeTab)?.label}
+              </span>
+            </div>
+            
+            {/* Page title on Desktop View */}
+            <div className="hidden lg:block">
               <h2 className="text-lg md:text-2xl font-black text-slate-800 leading-tight">
                 {menuItems.find(i => i.id === activeTab)?.label}
               </h2>
@@ -418,84 +473,7 @@ function StudentDashboard() {
                   </div>
                 )}
 
-                {/* Dashboard Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  
-                  {/* Dial Card */}
-                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center justify-center text-center">
-                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Overall Performance</h4>
-                    <div className="relative w-32 h-32 flex items-center justify-center">
-                       <svg className="w-full h-full transform -rotate-90">
-                          <circle cx="64" cy="64" r="54" className="text-slate-50 stroke-current" strokeWidth="10" fill="transparent" />
-                          <circle cx="64" cy="64" r="54" className={`${overallAttendance >= 75 ? 'text-emerald-500' : 'text-rose-500'} stroke-current`} strokeWidth="10" fill="transparent" strokeDasharray="339" strokeDashoffset={339 - (339 * overallAttendance) / 100} />
-                       </svg>
-                       <span className="absolute text-2xl font-black text-slate-800">{overallAttendance}%</span>
-                    </div>
-                    <p className="mt-4 font-extrabold text-slate-700 text-xs">Total Classes: {totalCount} | Attended: {presentCount}</p>
-                    <span className={`px-2.5 py-0.5 rounded text-[9px] font-black uppercase mt-2.5 ${
-                      overallAttendance >= 75 ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-50 text-rose-600 border border-rose-100'
-                    }`}>
-                      {overallAttendance >= 75 ? 'ELIGIBLE' : 'INELIGIBLE'}
-                    </span>
-                  </div>
-                  
-                  {/* Subject Breakdown Progress */}
-                  <div className="md:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col h-[260px]">
-                    <h3 className="font-extrabold text-slate-800 text-sm border-b pb-3 mb-4 flex justify-between items-center">
-                      <span>Subject-wise Lecture Aggregates</span>
-                      <button onClick={fetchMyAttendance} className="text-xs text-indigo-600 font-bold hover:underline">Refresh Logs</button>
-                    </h3>
-                    
-                    <div className="flex-1 overflow-y-auto space-y-4 pr-1 custom-scrollbar">
-                      {subjectAnalytics.map((sub, idx) => (
-                         <div key={idx} className="space-y-1.5">
-                            <div className="flex justify-between text-xs font-semibold">
-                               <span className="font-bold text-slate-700 truncate max-w-[200px]">{sub.subject}</span>
-                               <span className={`font-black ${sub.percent >= 75 ? 'text-emerald-600' : 'text-rose-600'}`}>{sub.percent}% ({sub.present}/{sub.total})</span>
-                            </div>
-                            <div className="w-full bg-slate-50 border rounded-full h-2">
-                               <div className={`h-1.5 rounded-full ${sub.percent >= 75 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${sub.percent}%` }}></div>
-                            </div>
-                         </div>
-                      ))}
-                      {subjectAnalytics.length === 0 && (
-                        <div className="h-full flex items-center justify-center text-slate-400 italic text-xs py-10 font-bold">No academic attendance logs registered yet.</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Live Daily Attendance Ledger */}
-                <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col h-[400px]">
-                  <h3 className="font-extrabold text-slate-800 text-sm border-b pb-3 mb-4">Daily Attendance History Ledger</h3>
-                  
-                  <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar">
-                    {attendanceRecords.map(rec => (
-                      <div key={rec._id} className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex justify-between items-center text-xs">
-                        <div className="space-y-1">
-                          <p className="font-bold text-slate-700">{rec.subject?.name || 'Subject'}</p>
-                          <p className="text-[10px] text-slate-400 font-mono font-bold">
-                            Date: {new Date(rec.date).toLocaleDateString()} | Period: {rec.period} | Method: {rec.entryType}
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <span className={`px-2.5 py-0.5 rounded text-[10px] font-black uppercase ${
-                            rec.status === 'Present' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
-                            rec.status === 'Late' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
-                            rec.status === 'On-Duty' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
-                            'bg-rose-100 text-rose-800 border border-rose-200'
-                          }`}>
-                            {rec.status}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                    {attendanceRecords.length === 0 && (
-                      <div className="h-full flex items-center justify-center text-slate-400 italic text-xs py-20 font-bold">No check-ins logged in database. Scan QR codes during active lectures.</div>
-                    )}
-                  </div>
-                </div>
-
+                <StudentDetailsView studentId={user?.id} />
               </div>
             )}
 
@@ -626,7 +604,7 @@ function StudentDashboard() {
                       <select 
                         required
                         value={leaveForm.leaveType}
-                        onChange={(e) => setLeaveForm({ ...leaveForm, leaveType: e.target.value })}
+                        onChange={(e) => setLeaveForm({ ...leaveForm, leaveType: e.target.value, proofImage: '' })}
                         className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold text-slate-700 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
                       >
                         <option value="Sick">Sick Leave</option>
@@ -634,6 +612,34 @@ function StudentDashboard() {
                         <option value="Casual">Casual Leave</option>
                       </select>
                     </div>
+
+                    {leaveForm.leaveType === 'OD' && (
+                      <div>
+                        <label className="block font-bold text-slate-500 mb-1.5 uppercase">Upload OD Proof (Image)</label>
+                        <input 
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const file = e.target.files[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onloadend = () => {
+                                setLeaveForm({ ...leaveForm, proofImage: reader.result });
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-700 font-bold"
+                          required
+                        />
+                        {leaveForm.proofImage && (
+                          <div className="mt-2 text-center bg-slate-50 p-2 rounded-xl border">
+                            <p className="text-[10px] text-slate-400 mb-1">Preview:</p>
+                            <img src={leaveForm.proofImage} alt="OD Proof Preview" className="max-h-24 mx-auto rounded-lg border shadow-sm" />
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-2 gap-4">
                       <div>

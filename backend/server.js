@@ -1,10 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
-
-// Initialize Smart Attendance Automation Engine
-require('./services/attendanceEngine');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -23,10 +21,38 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Rate Limiting Config
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: { message: 'Too many authentication attempts from this IP, please try again after 15 minutes' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 500, // Limit each IP to 500 requests per windowMs
+  message: { message: 'Too many requests from this IP, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/auth', authLimiter);
+app.use('/api/', apiLimiter);
+
 // Database Connection
-mongoose.connect(process.env.MONGODB_URI)
+const maxPoolSize = Number(process.env.MONGODB_MAX_POOL_SIZE || 100);
+const mongooseOptions = {
+  maxPoolSize,
+  minPoolSize: Number(process.env.MONGODB_MIN_POOL_SIZE || 10),
+  socketTimeoutMS: 45000,
+  connectTimeoutMS: 30000,
+};
+
+mongoose.connect(process.env.MONGODB_URI, mongooseOptions)
   .then(() => {
-    console.log('✅ MongoDB connected successfully');
+    console.log(`✅ MongoDB connected successfully (Pool Size: ${maxPoolSize})`);
   })
   .catch((err) => {
     console.error('❌ MongoDB connection error:', err);
@@ -34,7 +60,7 @@ mongoose.connect(process.env.MONGODB_URI)
 
 // Basic Route
 app.get('/', (req, res) => {
-  res.send('Smart Attendance Backend is running!');
+  res.send('NITify Backend is running!');
 });
 
 app.get('/api/health', (req, res) => {
@@ -49,10 +75,45 @@ app.use('/api/logs', require('./routes/logRoutes'));
 app.use('/api/reports', require('./routes/reportsRoutes'));
 app.use('/api/attendance', require('./routes/attendanceRoutes'));
 
-// Background Jobs
-require('./services/attendanceJob');
+const cluster = require('cluster');
+const os = require('os');
 
-// Start Server
-app.listen(PORT, () => {
-  console.log(`🚀 Server is running on port: ${PORT}`);
-});
+// Background Jobs (only running on master process or if CLUSTER_MODE is disabled, controlled by RUN_CRON_JOBS env)
+const runCronJobs = process.env.RUN_CRON_JOBS === 'true';
+const clusterMode = process.env.CLUSTER_MODE === 'true';
+
+const startServer = () => {
+  app.listen(PORT, () => {
+    console.log(`🚀 Worker ${process.pid} is running on port: ${PORT}`);
+  });
+};
+
+if (clusterMode && cluster.isMaster) {
+  console.log(`👑 Master process ${process.pid} is running.`);
+  
+  // Start background jobs only on Master to prevent duplicate execution across workers
+  if (runCronJobs) {
+    console.log('⏰ Starting background cron jobs on Master process...');
+    require('./services/attendanceEngine');
+    require('./services/attendanceJob');
+  }
+
+  const numCPUs = os.cpus().length;
+  console.log(`Forking ${numCPUs} workers...`);
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
+
+  cluster.on('exit', (worker, code, signal) => {
+    console.log(`Worker ${worker.process.pid} died. Forking a replacement...`);
+    cluster.fork();
+  });
+} else {
+  // If CLUSTER_MODE is disabled, we still run background jobs on this single process if RUN_CRON_JOBS is true
+  if (!clusterMode && runCronJobs) {
+    console.log('⏰ Starting background cron jobs on single-threaded server...');
+    require('./services/attendanceEngine');
+    require('./services/attendanceJob');
+  }
+  startServer();
+}

@@ -36,10 +36,50 @@ exports.submitRequest = async (req, res) => {
     // Fetch the record to get oldValue
     let record;
     let oldValue;
-    const finalTargetRecord = targetModel === 'Leave' ? (targetRecord || reqUserId) : targetRecord;
+    let finalTargetRecord = targetModel === 'Leave' ? (targetRecord || reqUserId) : targetRecord;
 
     if (targetModel === 'Attendance') {
-      record = await Attendance.findById(finalTargetRecord);
+      const mongoose = require('mongoose');
+      let isIdValid = mongoose.Types.ObjectId.isValid(finalTargetRecord);
+      if (isIdValid) {
+        record = await Attendance.findById(finalTargetRecord);
+      }
+      
+      if (!record) {
+        // Try looking up by studentId and sessionId
+        const { studentId, sessionId } = req.body;
+        if (studentId && sessionId) {
+          record = await Attendance.findOne({ session: sessionId, student: studentId });
+          if (!record) {
+            const Session = require('../models/Session');
+            const targetSession = await Session.findById(sessionId);
+            if (targetSession) {
+              const studentDetails = await User.findById(studentId).select('department year semester section').lean();
+              record = new Attendance({
+                session: sessionId,
+                student: studentId,
+                subject: targetSession.subject,
+                date: targetSession.date,
+                period: targetSession.period || 'H1',
+                status: 'Absent',
+                markedBy: 'Faculty',
+                entryType: 'Manual',
+                locked: true,
+                faculty: targetSession.faculty,
+                department: studentDetails?.department || targetSession.department,
+                year: studentDetails?.year || targetSession.year,
+                semester: studentDetails?.semester || targetSession.semester,
+                section: studentDetails?.section || targetSession.section
+              });
+              await record.save();
+            }
+          }
+          if (record) {
+            finalTargetRecord = record._id;
+          }
+        }
+      }
+
       if (!record) return res.status(404).json({ success: false, message: 'Attendance record not found.' });
       oldValue = record.status;
     } else if (targetModel === 'Mark') {
@@ -76,10 +116,50 @@ exports.submitRequest = async (req, res) => {
 exports.getRequests = async (req, res) => {
   try {
     const query = {};
+    
+    // Non-admin roles (HOD, Faculty) should not see PasswordReset requests
+    if (['HoD', 'Faculty', 'Class Advisor'].includes(req.user.role)) {
+      query.targetModel = { $ne: 'PasswordReset' };
+    }
+
     if (req.user.role === 'HoD') {
-      const deptUsers = await User.find({ department: req.user.department }).select('_id');
-      const deptUserIds = deptUsers.map(u => u._id);
-      query.requestedBy = { $in: deptUserIds };
+      // HODs only see requests for students in their department who DO NOT have a class advisor, plus department faculty
+      const advisors = await User.find({
+        role: 'Faculty',
+        'classAdvisorDetails.isClassAdvisor': true,
+        department: req.user.department,
+        isActive: true
+      });
+      
+      const advisedClasses = advisors.map(adv => ({
+        year: adv.classAdvisorDetails.year,
+        semester: adv.classAdvisorDetails.semester,
+        section: adv.classAdvisorDetails.section
+      }));
+
+      const allDeptStudents = await User.find({
+        role: 'Student',
+        department: req.user.department
+      });
+
+      const studentsWithoutAdvisor = allDeptStudents.filter(student => {
+        const hasAdvisor = advisedClasses.some(c => 
+          String(student.year) === String(c.year) &&
+          String(student.semester) === String(c.semester) &&
+          student.section === c.section
+        );
+        return !hasAdvisor;
+      });
+
+      const studentIdsWithoutAdvisor = studentsWithoutAdvisor.map(s => s._id);
+
+      const deptFaculty = await User.find({
+        role: 'Faculty',
+        department: req.user.department
+      });
+      const facultyIds = deptFaculty.map(f => f._id);
+
+      query.requestedBy = { $in: [...studentIdsWithoutAdvisor, ...facultyIds] };
     } else if (req.user.role === 'Faculty' || req.user.role === 'Class Advisor') {
       const isClassAdvisor = (req.user.classAdvisorDetails && req.user.classAdvisorDetails.isClassAdvisor) || req.user.role === 'Class Advisor';
       if (isClassAdvisor) {
@@ -132,8 +212,27 @@ exports.reviewRequest = async (req, res) => {
     }
 
     // Boundary check for HOD
-    if (req.user.role === 'HoD' && request.requestedBy.department !== req.user.department) {
-      return res.status(403).json({ success: false, message: 'Access denied: Request is outside your department.' });
+    if (req.user.role === 'HoD') {
+      if (request.requestedBy.department !== req.user.department) {
+        return res.status(403).json({ success: false, message: 'Access denied: Request is outside your department.' });
+      }
+
+      // HOD cannot approve student request if a class advisor is present for that student's class
+      if (request.requestedBy.role === 'Student') {
+        const student = request.requestedBy;
+        const advisor = await User.findOne({
+          role: 'Faculty',
+          'classAdvisorDetails.isClassAdvisor': true,
+          'classAdvisorDetails.department': student.department,
+          'classAdvisorDetails.year': student.year,
+          'classAdvisorDetails.semester': student.semester,
+          'classAdvisorDetails.section': student.section,
+          isActive: true
+        });
+        if (advisor) {
+          return res.status(403).json({ success: false, message: 'Access denied: This request must be reviewed by the Class Advisor.' });
+        }
+      }
     }
 
     // Boundary check for Class Advisor (Faculty)
@@ -173,22 +272,130 @@ exports.reviewRequest = async (req, res) => {
         await Mark.findByIdAndUpdate(request.targetRecord, { internal, external, total, updatedBy: req.user._id || req.user.id, remarks: 'Updated via approved request' });
       } else if (request.targetModel === 'Leave') {
         const studentId = request.requestedBy._id || request.requestedBy;
-        const startDate = new Date(request.newValue.startDate);
-        startDate.setHours(0, 0, 0, 0);
-        const endDate = new Date(request.newValue.endDate);
-        endDate.setHours(23, 59, 59, 999);
+        const student = await User.findById(studentId);
+        if (student) {
+          const startDate = new Date(request.newValue.startDate);
+          const endDate = new Date(request.newValue.endDate);
+          const leaveType = request.newValue.leaveType || 'General';
 
-        await Attendance.updateMany(
-          {
-            student: studentId,
-            date: { $gte: startDate, $lte: endDate }
-          },
-          {
-            status: 'On-Duty',
-            updatedBy: req.user._id || req.user.id,
-            remarks: `Leave approved: ${request.newValue.leaveType || 'General'}`
+          let attendanceStatus = 'On-Duty';
+          if (leaveType === 'Medical Leave' || leaveType === 'ML') {
+            attendanceStatus = 'Medical Leave';
+          } else if (leaveType === 'Casual Leave' || leaveType === 'CL') {
+            attendanceStatus = 'Casual Leave';
           }
-        );
+
+          // Fetch all timetable entries for this student's class
+          const Timetable = require('../models/Timetable');
+          const timetables = await Timetable.find({
+            department: student.department,
+            year: student.year,
+            semester: student.semester,
+            section: student.section
+          });
+
+          // Loop through each date in the range
+          const currentDate = new Date(startDate);
+          currentDate.setHours(0,0,0,0);
+          const endLimitDate = new Date(endDate);
+          endLimitDate.setHours(23,59,59,999);
+
+          const Session = require('../models/Session');
+          const AcademicCalendar = require('../models/AcademicCalendar');
+
+          while (currentDate <= endLimitDate) {
+            const dayStart = new Date(currentDate);
+            dayStart.setHours(0,0,0,0);
+            const dayEnd = new Date(currentDate);
+            dayEnd.setHours(23,59,59,999);
+
+            // Check if it's a holiday/non-working day
+            const calendarEntry = await AcademicCalendar.findOne({
+              date: { $gte: dayStart, $lte: dayEnd }
+            });
+
+            if (!calendarEntry || calendarEntry.type !== 'Holiday') {
+              const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+              const dayOfWeekName = days[currentDate.getDay()];
+
+              // Find timetable entries for this day of the week
+              const slotsForToday = timetables.filter(t => t.dayOfWeek === dayOfWeekName);
+
+              for (const slot of slotsForToday) {
+                // Find or create session for this timetable slot and date
+                let session = await Session.findOne({
+                  timetable: slot._id,
+                  date: { $gte: dayStart, $lte: dayEnd }
+                });
+
+                if (!session) {
+                  session = new Session({
+                    timetable: slot._id,
+                    subject: slot.subject,
+                    faculty: slot.faculty,
+                    date: new Date(currentDate),
+                    period: slot.period,
+                    locked: true,
+                    isActive: false,
+                    department: student.department,
+                    year: student.year,
+                    semester: student.semester,
+                    section: student.section
+                  });
+                  await session.save();
+                }
+
+                // Create or update attendance record
+                await Attendance.findOneAndUpdate(
+                  {
+                    session: session._id,
+                    student: studentId
+                  },
+                  {
+                    status: attendanceStatus,
+                    updatedBy: req.user._id || req.user.id,
+                    remarks: `Leave approved: ${leaveType}`,
+                    subject: slot.subject,
+                    date: new Date(currentDate),
+                    faculty: slot.faculty,
+                    department: student.department,
+                    year: student.year,
+                    semester: student.semester,
+                    section: student.section,
+                    entryType: 'Manual',
+                    markedBy: 'Admin'
+                  },
+                  { upsert: true, new: true }
+                );
+              }
+            }
+
+            currentDate.setDate(currentDate.getDate() + 1);
+          }
+        }
+      } else if (request.targetModel === 'PasswordReset') {
+        const studentId = request.requestedBy._id || request.requestedBy;
+        const targetUser = await User.findById(studentId);
+        if (targetUser) {
+          const targetDob = targetUser.dob;
+          if (!targetDob) {
+            return res.status(400).json({ success: false, message: 'User does not have a Date of Birth set in their profile.' });
+          }
+          const d = new Date(targetDob);
+          if (isNaN(d.getTime())) {
+            return res.status(400).json({ success: false, message: 'Invalid Date of Birth format.' });
+          }
+          const dd = String(d.getDate()).padStart(2, '0');
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const yyyy = d.getFullYear();
+          const dobString = `${dd}${mm}${yyyy}`;
+
+          const bcrypt = require('bcryptjs');
+          const salt = await bcrypt.genSalt(10);
+          targetUser.password = await bcrypt.hash(dobString, salt);
+          targetUser.isFirstLogin = true;
+          await targetUser.save();
+        }
       }
     }
 

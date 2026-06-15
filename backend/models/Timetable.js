@@ -19,4 +19,9 @@ const timetableSchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 
+timetableSchema.index({ dayOfWeek: 1, startTime: 1 });
+timetableSchema.index({ dayOfWeek: 1, endTime: 1 });
+timetableSchema.index({ faculty: 1, isActive: 1 });
+timetableSchema.index({ department: 1, year: 1, semester: 1, section: 1 });
+
 module.exports = mongoose.model('Timetable', timetableSchema);

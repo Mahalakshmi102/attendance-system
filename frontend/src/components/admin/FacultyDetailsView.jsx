@@ -2,13 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { 
   ArrowLeft, Calendar, Mail, Phone, MapPin, Shield, BookOpen, 
   Briefcase, GraduationCap, Clock, Award, Printer, Loader2, AlertCircle,
-  CheckCircle2, XCircle, AlertTriangle, History, Check, FileText, Activity
+  CheckCircle2, XCircle, AlertTriangle, History, Check, FileText, Activity,
+  ChevronDown, ChevronUp
 } from 'lucide-react';
+import axios from 'axios';
+import { API_BASE_URL } from '../../api/http';
 import { getSubjects, getTimetable, getFacultyAttendanceActivities } from '../../api/adminApi';
+import AdvisorDashboardView from '../faculty/AdvisorDashboardView';
 
-export default function FacultyDetailsView({ faculty, onBack }) {
-  const [activeTab, setActiveTab] = useState('profile');
+export default function FacultyDetailsView({ faculty, onBack, onNavigateTab }) {
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [loading, setLoading] = useState(true);
+  const [advisorStats, setAdvisorStats] = useState(null);
   const [error, setError] = useState('');
   
   // Consolidated activities state
@@ -18,6 +23,12 @@ export default function FacultyDetailsView({ faculty, onBack }) {
   const [subjects, setSubjects] = useState([]);
   const [timetable, setTimetable] = useState([]);
 
+  // States for expandable session details in Attendance History
+  const [expandedSessionIds, setExpandedSessionIds] = useState({});
+  const [sessionDetails, setSessionDetails] = useState({});
+  const [detailsLoading, setDetailsLoading] = useState({});
+  const [detailsError, setDetailsError] = useState({});
+
   useEffect(() => {
     fetchFacultyData();
   }, [faculty]);
@@ -26,14 +37,9 @@ export default function FacultyDetailsView({ faculty, onBack }) {
     try {
       setLoading(true);
       setError('');
-      
       const fId = faculty?._id || faculty?.id;
-      if (!fId) {
-        setError('No valid faculty ID provided.');
-        setLoading(false);
-        return;
-      }
-      
+      if (!fId) return;
+
       const [activityRes, subjectsRes, timetableRes] = await Promise.all([
         getFacultyAttendanceActivities(fId),
         getSubjects(),
@@ -41,6 +47,23 @@ export default function FacultyDetailsView({ faculty, onBack }) {
       ]);
 
       setActivityData(activityRes.data);
+
+      // Fetch advisor stats if class advisor
+      let advStats = null;
+      if (faculty.classAdvisorDetails?.isClassAdvisor) {
+        try {
+          const adv = faculty.classAdvisorDetails;
+          const token = localStorage.getItem('token');
+          const url = `${API_BASE_URL}/api/admin/advisor/stats?department=${adv.department}&year=${adv.year}&semester=${adv.semester}&section=${adv.section}`;
+          const res = await axios.get(url, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          advStats = res.data;
+        } catch (err) {
+          console.error('Failed to fetch advisor stats in dossier:', err);
+        }
+      }
+      setAdvisorStats(advStats);
 
       // Filter subjects assigned to this faculty member for the timetable/portfolio tab
       const assignedSubjects = subjectsRes.data.filter(sub => 
@@ -56,7 +79,7 @@ export default function FacultyDetailsView({ faculty, onBack }) {
 
     } catch (err) {
       console.error('Error fetching faculty activities:', err);
-      setError('Could not retrieve full attendance compliance or workload stats for this faculty member.');
+      setError('Could not retrieve full attendance compliance or timetable stats for this faculty member.');
     } finally {
       setLoading(false);
     }
@@ -64,6 +87,32 @@ export default function FacultyDetailsView({ faculty, onBack }) {
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const toggleSessionExpand = async (sessionId) => {
+    if (expandedSessionIds[sessionId]) {
+      setExpandedSessionIds(prev => ({ ...prev, [sessionId]: false }));
+      return;
+    }
+
+    setExpandedSessionIds(prev => ({ ...prev, [sessionId]: true }));
+
+    if (sessionDetails[sessionId]) return;
+
+    try {
+      setDetailsLoading(prev => ({ ...prev, [sessionId]: true }));
+      setDetailsError(prev => ({ ...prev, [sessionId]: null }));
+      const token = localStorage.getItem('token');
+      const res = await axios.get(`${API_BASE_URL}/api/attendance/session/${sessionId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setSessionDetails(prev => ({ ...prev, [sessionId]: res.data }));
+    } catch (err) {
+      console.error('Failed to fetch session details:', err);
+      setDetailsError(prev => ({ ...prev, [sessionId]: 'Failed to load details. Click retry.' }));
+    } finally {
+      setDetailsLoading(prev => ({ ...prev, [sessionId]: false }));
+    }
   };
 
   // Group timetable slots by day
@@ -103,6 +152,14 @@ export default function FacultyDetailsView({ faculty, onBack }) {
     return isNaN(d.getTime()) ? dateStr : d.toLocaleString();
   };
 
+  const handleMarkSlot = (slot) => {
+    if (onNavigateTab) {
+      onNavigateTab('attendance', slot);
+    } else {
+      alert("Only the assigned faculty member can mark attendance. If you are logged in as admin, please use manual override options under logs.");
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center p-20 bg-white border border-slate-100 rounded-3xl shadow-sm">
@@ -126,6 +183,60 @@ export default function FacultyDetailsView({ faculty, onBack }) {
   }
 
   const { stats, sessionsList, missedSubmissions, classWiseStats, correctionRequests, recentActivities } = activityData;
+
+  const pendingList = (() => {
+    if (!activityData) return [];
+    const list = [];
+
+    // 1. Add started but unlocked sessions (type: 'session')
+    sessionsList.filter(s => !s.locked).forEach(s => {
+      list.push({
+        _id: s._id,
+        date: s.date,
+        period: s.period,
+        subjectCode: s.subjectCode || 'N/A',
+        subjectName: s.subjectName || 'N/A',
+        class: s.class,
+        type: 'Session Started (Pending Lock)',
+        timetableId: s.timetableId,
+        classroom: s.classroom || 'N/A',
+        time: s.time || (s.period ? `Period ${s.period}` : 'N/A')
+      });
+    });
+
+    // 2. Add missed scheduled sessions (type: 'timetable')
+    missedSubmissions.forEach(m => {
+      const exists = list.some(l => 
+        l.timetableId === m.timetableId && 
+        new Date(l.date).toDateString() === new Date(m.date).toDateString()
+      );
+      if (!exists) {
+        list.push({
+          _id: null,
+          date: m.date,
+          period: m.period,
+          subjectCode: m.subjectCode,
+          subjectName: m.subjectName,
+          class: m.class,
+          type: 'Missed Scheduled Class',
+          timetableId: m.timetableId,
+          classroom: m.classroom || 'N/A',
+          time: m.time || 'N/A'
+        });
+      }
+    });
+
+    return list.sort((a, b) => new Date(b.date) - new Date(a.date));
+  })();
+
+  const assigned = stats.totalClassesAssigned || 0;
+  const submitted = stats.submissionsCompleted || 0;
+  const pending = pendingList.length;
+  const conducted = submitted + pending;
+  
+  const completionPct = conducted > 0 ? Math.round((submitted / conducted) * 100) : 0;
+  const extraClasses = conducted > assigned ? conducted - assigned : 0;
+  const displayConducted = conducted;
 
   return (
     <div className="space-y-6 pb-20 print:p-0 print:space-y-4">
@@ -154,7 +265,7 @@ export default function FacultyDetailsView({ faculty, onBack }) {
         {onBack ? (
           <button 
             onClick={onBack}
-            className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-xl border border-slate-200 shadow-sm transition"
+            className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-slate-55 text-slate-700 font-bold rounded-xl border border-slate-200 shadow-sm transition"
           >
             <ArrowLeft className="w-4 h-4 text-slate-500" /> Back to Faculty List
           </button>
@@ -166,7 +277,7 @@ export default function FacultyDetailsView({ faculty, onBack }) {
           onClick={handlePrint}
           className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition shadow-indigo-600/15"
         >
-          <Printer className="w-4.5 h-4.5" /> Print Compliance Dossier
+          <Printer className="w-4.5 h-4.5" /> Print Timetable & Submission Report
         </button>
       </div>
 
@@ -193,21 +304,21 @@ export default function FacultyDetailsView({ faculty, onBack }) {
             <span className={`px-3 py-1.5 rounded-full text-xs font-extrabold shadow-sm ${faculty.isActive !== false ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'}`}>
               {faculty.isActive !== false ? 'Account Active' : 'Account Suspended'}
             </span>
-            <p className="text-[10px] font-bold text-slate-400 mt-2">Compliance Check: {stats.missedSubmissionsCount === 0 ? 'Compliant' : 'Needs Review'}</p>
+            <p className="text-[10px] font-bold text-slate-400 mt-2">Work Status: {stats.missedSubmissionsCount === 0 ? 'All Logs Submitted' : 'Pending Action'}</p>
           </div>
         </div>
 
         {/* Tab Controls */}
         <div className="flex flex-wrap border-t border-slate-100 bg-slate-50/50 p-2 gap-1 no-print">
           {[
-            { id: 'profile', label: 'Dossier Profile' },
-            { id: 'activities', label: 'Attendance Activities' },
-            { id: 'compliance', label: `Compliance Alerts (${stats.missedSubmissionsCount})` },
-            { id: 'performance', label: 'Class Analytics' },
+            { id: 'dashboard', label: 'Dashboard Overview' },
+            { id: 'activities', label: 'Attendance History' },
+            { id: 'compliance', label: `Pending Submissions (${pendingList.length})` },
+            { id: 'timetable', label: 'Individual Timetable' },
             { id: 'requests', label: `Correction Requests (${correctionRequests.length})` },
-            { id: 'timetable', label: 'Timetable Schedule' },
-            { id: 'permissions', label: 'System Privileges' },
-            { id: 'audit', label: 'Logged Actions' }
+            { id: 'performance', label: 'Reports' },
+            { id: 'audit', label: 'Audit Logs' },
+            ...(faculty.classAdvisorDetails?.isClassAdvisor ? [{ id: 'advisor', label: 'Advisor Features' }] : [])
           ].map(tab => (
             <button 
               key={tab.id}
@@ -223,6 +334,379 @@ export default function FacultyDetailsView({ faculty, onBack }) {
           ))}
         </div>
       </div>
+
+      {/* Tab Content 0: Dashboard Overview */}
+      {activeTab === 'dashboard' && (() => {
+        const todaySchedule = (() => {
+          const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          const todayDayName = days[new Date().getDay()];
+          const now = new Date();
+
+          const todayTimetable = timetable.filter(slot => slot.dayOfWeek === todayDayName);
+
+          const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+          const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+          
+          const todaySessions = sessionsList.filter(s => {
+            const sDate = new Date(s.date);
+            return sDate >= todayStart && sDate <= todayEnd;
+          });
+
+          const schedule = todayTimetable.map(slot => {
+            const session = todaySessions.find(s => 
+              (s.timetableId && s.timetableId.toString() === slot._id?.toString()) ||
+              (s.period === slot.period && s.subjectCode === slot.subject?.code)
+            );
+
+            let status = 'Upcoming';
+            let sessionId = session?._id || null;
+            let locked = session?.locked || false;
+
+            const [endHour, endMin] = slot.endTime.split(':').map(Number);
+            const slotEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), endHour, endMin, 0, 0);
+
+            if (session) {
+              if (session.locked) {
+                status = 'Submitted';
+              } else {
+                status = now > slotEnd ? 'Pending' : 'Upcoming';
+              }
+            } else {
+              status = now > slotEnd ? 'Pending' : 'Upcoming';
+            }
+
+            const dept = slot.department || faculty.department || 'CSE';
+            const yr = slot.year || '1';
+            const sem = slot.semester || '1';
+            const sec = slot.section || 'A';
+            const className = `${dept} Y${yr} Sem ${sem} Sec ${sec}`;
+
+            return {
+              timetableId: slot._id,
+              period: slot.period,
+              subjectCode: slot.subject?.code || 'N/A',
+              subjectName: slot.subject?.name || 'N/A',
+              class: className,
+              startTime: slot.startTime,
+              endTime: slot.endTime,
+              classroom: slot.classroom,
+              status,
+              sessionId,
+              locked
+            };
+          });
+
+          return schedule.sort((a, b) => a.startTime.localeCompare(b.startTime));
+        })();
+        const todayHasPending = todaySchedule.some(s => s.status === 'Pending');
+        
+        let nextSlot = todaySchedule.find(s => s.status === 'Pending');
+        if (!nextSlot) {
+          nextSlot = todaySchedule.find(s => s.status === 'Upcoming');
+        }
+        let pendingPast = null;
+        if (!nextSlot && pendingList.length > 0) {
+          pendingPast = pendingList[0];
+        }
+
+        const handleMarkNextClass = () => {
+          const target = nextSlot || pendingPast;
+          if (target) {
+            if (onNavigateTab) {
+              onNavigateTab('attendance', target);
+            } else {
+              alert("Only the assigned faculty member can mark attendance. If you are logged in as admin, please use manual override options under logs.");
+            }
+          } else {
+            alert("No pending or upcoming classes to mark attendance!");
+          }
+        };
+
+
+
+        return (
+          <div className="space-y-6">
+            {/* Primary Action Hero Banner */}
+            <div className="bg-gradient-to-r from-indigo-900 via-indigo-850 to-slate-900 rounded-2xl p-6 text-white flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-lg border border-indigo-800/30">
+              <div>
+                <h3 className="text-base font-black tracking-tight flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-rose-450 animate-pulse" />
+                  Next Attendance Action
+                </h3>
+                {nextSlot ? (
+                  <p className="text-xs text-indigo-200 mt-1.5 font-semibold">
+                    {nextSlot.status === 'Pending' ? 'Pending:' : 'Upcoming:'} Period {nextSlot.period} - <span className="font-extrabold text-white">{nextSlot.class ? nextSlot.class.split(' Sec ')[0] : ''} ({nextSlot.subjectCode})</span> at {nextSlot.startTime}.
+                  </p>
+                ) : pendingPast ? (
+                  <p className="text-xs text-indigo-200 mt-1.5 font-semibold">
+                    Pending Past Class: <span className="font-extrabold text-white">{pendingPast.class ? pendingPast.class.split(' Sec ')[0] : ''} ({pendingPast.subjectCode})</span> on {new Date(pendingPast.date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, Period {pendingPast.period}.
+                  </p>
+                ) : (
+                  <p className="text-xs text-indigo-100 mt-1.5 font-semibold">
+                    All attendance submissions are up to date! Great job.
+                  </p>
+                )}
+              </div>
+              <button 
+                onClick={handleMarkNextClass}
+                className="px-6 py-3 bg-rose-500 hover:bg-rose-600 active:scale-95 text-white rounded-xl font-black text-xs uppercase shadow transition duration-200 shrink-0"
+              >
+                Mark Attendance
+              </button>
+            </div>
+
+            {/* Section 1: Today's Schedule */}
+            <div className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
+              <div className="p-5 border-b border-slate-100 bg-slate-50/20 flex justify-between items-center">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800">Today's Schedule</h3>
+                  <p className="text-[10px] text-slate-400 font-semibold mt-0.5">Classes assigned for today.</p>
+                </div>
+                <span className="text-[10px] font-bold text-indigo-650 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full uppercase tracking-wider">
+                  {new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })}
+                </span>
+              </div>
+              
+              <div className="overflow-x-auto">
+                <table className="w-full text-center text-xs whitespace-nowrap">
+                  <thead className="bg-slate-50 border-b border-slate-100 text-slate-400 font-bold uppercase tracking-wider">
+                    <tr>
+                      <th className="p-4 text-left">Period</th>
+                      <th className="p-4">Time</th>
+                      <th className="p-4 text-left">Class</th>
+                      <th className="p-4 text-left">Section</th>
+                      <th className="p-4 text-left">Subject</th>
+                      <th className="p-4">Attendance Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
+                    {todaySchedule.map((slot, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50/50 transition">
+                        <td className="p-4 text-left font-black text-slate-855 font-mono">
+                          <span className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-2.5 py-1 rounded-lg">
+                            {slot.period}
+                          </span>
+                        </td>
+                        <td className="p-4 font-mono font-bold text-slate-400">
+                          {slot.startTime} - {slot.endTime}
+                        </td>
+                        <td className="p-4 text-left text-slate-800 font-bold">
+                          {slot.class ? slot.class.split(' Sec ')[0] : 'N/A'}
+                        </td>
+                        <td className="p-4 text-left text-slate-800 font-bold">
+                          {slot.class ? (slot.class.split(' Sec ')[1] || slot.section || 'N/A') : 'N/A'}
+                        </td>
+                        <td className="p-4 text-left">
+                          <span className="block font-black text-slate-800">{slot.subjectCode}</span>
+                          <span className="block text-[10px] text-slate-400 mt-0.5">{slot.subjectName}</span>
+                        </td>
+                        <td className="p-4 text-center">
+                          {slot.status === 'Submitted' ? (
+                            <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-100 px-3 py-1 rounded-lg text-[9px] font-black uppercase">
+                              <Check className="w-3 h-3" /> Submitted
+                            </span>
+                          ) : (
+                            <button 
+                              onClick={() => handleMarkSlot(slot)}
+                              className="px-3.5 py-1.5 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-[10px] font-black uppercase shadow-sm transition"
+                            >
+                              Mark Attendance
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                    {todaySchedule.length === 0 && (
+                      <tr>
+                        <td colSpan="6" className="p-12 text-center text-slate-400 italic font-bold">
+                          No classes assigned for today.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {(!todayHasPending || pendingList.length === 0) && todaySchedule.length > 0 && (
+                <div className="m-5 p-4 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center gap-3 text-emerald-800">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                  <span className="text-xs font-bold">All attendance has been submitted successfully.</span>
+                </div>
+              )}
+            </div>
+
+            {/* Section 2: Pending Attendance Actions */}
+            <div className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
+              <div className="p-5 border-b border-slate-100 bg-slate-50/20">
+                <h3 className="text-sm font-black text-slate-800">Pending Attendance Actions</h3>
+                <p className="text-[10px] text-slate-400 font-semibold mt-0.5">Periods across all dates for which attendance has not yet been locked/submitted.</p>
+              </div>
+              
+              <div className="overflow-x-auto">
+                <table className="w-full text-center text-xs whitespace-nowrap">
+                  <thead className="bg-slate-50 border-b border-slate-100 text-slate-400 font-bold uppercase tracking-wider">
+                    <tr>
+                      <th className="p-4 text-left">Date</th>
+                      <th className="p-4">Period</th>
+                      <th className="p-4 text-left">Class</th>
+                      <th className="p-4 text-left">Section</th>
+                      <th className="p-4 text-left">Subject</th>
+                      <th className="p-4">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
+                    {pendingList.map((p, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50/50 transition">
+                        <td className="p-4 text-left font-bold text-slate-800">
+                          {new Date(p.date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </td>
+                        <td className="p-4 font-mono font-bold text-slate-700">
+                          {p.period}
+                        </td>
+                        <td className="p-4 text-left text-slate-800 font-bold">
+                          {p.class ? p.class.split(' Sec ')[0] : 'N/A'}
+                        </td>
+                        <td className="p-4 text-left text-slate-800 font-bold">
+                          {p.class ? (p.class.split(' Sec ')[1] || p.section || 'N/A') : 'N/A'}
+                        </td>
+                        <td className="p-4 text-left">
+                          <span className="block font-black text-slate-800">{p.subjectCode}</span>
+                          <span className="block text-[10px] text-slate-400 mt-0.5">{p.subjectName}</span>
+                        </td>
+                        <td className="p-4 text-center">
+                          <button 
+                            onClick={() => handleMarkSlot(p)}
+                            className="px-3.5 py-1.5 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-[10px] font-black uppercase shadow-sm transition"
+                          >
+                            Mark Attendance
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {pendingList.length === 0 && (
+                      <tr>
+                        <td colSpan="6" className="p-12 text-center text-slate-400 italic font-bold">
+                          All attendance submissions are completed. Awesome job!
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Section 3: Work Summary */}
+            <div className="bg-white border border-slate-100 p-6 rounded-2xl shadow-sm space-y-6">
+              <div>
+                <h3 className="text-sm font-black text-slate-800">Work Summary</h3>
+                <p className="text-[10px] text-slate-400 font-semibold mt-0.5">Overall semester workload and attendance logging performance.</p>
+              </div>
+                           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Periods Conducted */}
+                <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-2xl text-center flex flex-col justify-between hover:shadow-sm transition">
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">Periods Conducted</span>
+                  <span className="text-2xl font-black text-slate-700 mt-2 block">{displayConducted}</span>
+                  {extraClasses > 0 ? (
+                    <span className="text-[8px] bg-amber-50 text-amber-600 border border-amber-100 rounded px-1.5 py-0.5 font-extrabold inline-block mt-1 self-center">
+                      Includes {extraClasses} Extra Classes
+                    </span>
+                  ) : (
+                    <span className="text-[9px] text-slate-400 font-semibold block mt-1">Occurrence count</span>
+                  )}
+                </div>
+
+                {/* Attendance Submitted */}
+                <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-2xl text-center flex flex-col justify-between hover:shadow-sm transition">
+                  <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest block">Attendance Submitted</span>
+                  <span className="text-2xl font-black text-emerald-600 mt-2 block">{submitted}</span>
+                  <span className="text-[9px] text-emerald-500 font-semibold block mt-1">Locked logs</span>
+                </div>
+
+                {/* Pending Attendance */}
+                <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-2xl text-center flex flex-col justify-between hover:shadow-sm transition">
+                  <span className="text-[9px] font-black text-rose-600 uppercase tracking-widest block">Pending Attendance</span>
+                  <span className="text-2xl font-black text-rose-600 mt-2 block">{pending}</span>
+                  <span className="text-[9px] text-rose-500 font-semibold block mt-1">Awaiting logs</span>
+                </div>
+
+                {/* Overall Completion Percentage */}
+                <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-2xl text-center flex flex-col justify-between hover:shadow-sm transition">
+                  <div>
+                    <span className="text-[9px] font-black text-purple-650 uppercase tracking-widest block">Completion Percentage</span>
+                    <span className="text-2xl font-black text-purple-655 mt-2 block">{completionPct}%</span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-1.5 border mt-2 overflow-hidden">
+                    <div className="bg-purple-650 h-1.5 rounded-full transition-all duration-300" style={{ width: `${completionPct}%` }}></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 4: Advisor Overview */}
+            {faculty.classAdvisorDetails?.isClassAdvisor && advisorStats && (
+              <div className="bg-white border border-slate-100 p-6 rounded-2xl shadow-sm space-y-6">
+                <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="text-sm font-black text-slate-800 flex items-center gap-1.5">
+                      <Shield className="w-4 h-4 text-cyan-600" />
+                      Class Advisor Overview
+                    </h3>
+                    <p className="text-[10px] text-slate-400 font-semibold mt-0.5">
+                      Advised Class: {advisorStats.classDetails?.department} Y{advisorStats.classDetails?.year} Sec {advisorStats.classDetails?.section}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Advisee Class Attendance */}
+                  <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-xl flex items-center gap-4">
+                    <div className="bg-emerald-50 p-2.5 rounded-xl text-emerald-600 font-bold text-sm shrink-0">
+                      {advisorStats.statistics?.classAttendancePercentage}%
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wide">Class Attendance</span>
+                      <span className="text-xs font-bold text-slate-700 mt-1 block">Advisee average rate</span>
+                    </div>
+                  </div>
+
+                  {/* Defaulter Students */}
+                  <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-xl flex items-center gap-4">
+                    <div className="bg-rose-50 p-2.5 rounded-xl text-rose-600 font-black text-sm shrink-0">
+                      {advisorStats.statistics?.defaultersCount || 0}
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wide">Defaulter Students</span>
+                      <span className="text-xs font-bold text-slate-700 mt-1 block">Below threshold (&lt;75%)</span>
+                    </div>
+                  </div>
+
+                  {/* Leave Approvals */}
+                  <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-xl flex items-center gap-4">
+                    <div className="bg-purple-50 p-2.5 rounded-xl text-purple-650 font-black text-sm shrink-0">
+                      {advisorStats.statistics?.pendingLeavesCount || 0}
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wide">Leave Approvals</span>
+                      <span className="text-xs font-bold text-slate-700 mt-1 block">Awaiting advisor review</span>
+                    </div>
+                  </div>
+
+                  {/* Parent Communication Alerts */}
+                  <div className="bg-slate-50 border border-slate-100 p-4.5 rounded-xl flex items-center gap-4">
+                    <div className="bg-blue-50 p-2.5 rounded-xl text-blue-600 font-black text-sm shrink-0">
+                      {advisorStats.statistics?.atRiskCount || 0}
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-wide">Communication Alerts</span>
+                      <span className="text-xs font-bold text-slate-700 mt-1 block">At-risk students (75%-80%)</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Tab Content 1: Profile */}
       {activeTab === 'profile' && (
@@ -345,19 +829,35 @@ export default function FacultyDetailsView({ faculty, onBack }) {
       {activeTab === 'activities' && (
         <div className="space-y-6">
           {/* Workload Counters Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            {[
-              { label: 'Assigned Workloads', val: stats.totalClassesAssigned, color: 'text-indigo-650 bg-indigo-50/50 border-indigo-100' },
-              { label: 'Conducted Sessions', val: stats.totalSessionsConducted, color: 'text-emerald-650 bg-emerald-50/50 border-emerald-100' },
-              { label: 'Submissions Completed', val: stats.submissionsCompleted, color: 'text-teal-650 bg-teal-50/50 border-teal-100' },
-              { label: 'Submissions Pending', val: stats.submissionsPending, color: 'text-amber-650 bg-amber-50/50 border-amber-100' },
-              { label: 'Missed Submissions', val: stats.missedSubmissionsCount, color: stats.missedSubmissionsCount > 0 ? 'text-rose-650 bg-rose-50/50 border-rose-100 animate-pulse' : 'text-slate-500 bg-slate-50 border-slate-100' }
-            ].map((stat, idx) => (
-              <div key={idx} className={`p-5 rounded-2xl border text-center shadow-sm flex flex-col justify-center ${stat.color} print-card`}>
-                <span className="block text-[10px] font-black uppercase tracking-wider text-slate-400">{stat.label}</span>
-                <span className="block text-3xl font-black mt-2">{stat.val}</span>
-              </div>
-            ))}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {/* Hours Conducted */}
+            <div className="p-5 rounded-2xl border text-center shadow-sm flex flex-col justify-center text-emerald-650 bg-emerald-50/50 border-emerald-100 print-card">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-slate-400">Hours Conducted</span>
+              <span className="block text-3xl font-black mt-2">{conducted}</span>
+              {extraClasses > 0 && (
+                <span className="block text-[9px] font-bold text-emerald-600 mt-1">
+                  includes {extraClasses} Extra Classes
+                </span>
+              )}
+            </div>
+
+            {/* Attendance Submitted */}
+            <div className="p-5 rounded-2xl border text-center shadow-sm flex flex-col justify-center text-teal-650 bg-teal-50/50 border-teal-100 print-card">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-slate-400">Attendance Submitted</span>
+              <span className="block text-3xl font-black mt-2">{submitted}</span>
+            </div>
+
+            {/* Pending Attendance */}
+            <div className="p-5 rounded-2xl border text-center shadow-sm flex flex-col justify-center text-amber-650 bg-amber-50/50 border-amber-100 print-card">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-slate-400">Pending Attendance</span>
+              <span className="block text-3xl font-black mt-2">{pending}</span>
+            </div>
+
+            {/* Overall Completion Percentage */}
+            <div className="p-5 rounded-2xl border text-center shadow-sm flex flex-col justify-center text-indigo-650 bg-indigo-55/50 border-indigo-100 print-card">
+              <span className="block text-[10px] font-black uppercase tracking-wider text-slate-400">Overall Completion %</span>
+              <span className="block text-3xl font-black mt-2">{completionPct}%</span>
+            </div>
           </div>
 
           {/* Conducted Sessions List */}
@@ -371,6 +871,7 @@ export default function FacultyDetailsView({ faculty, onBack }) {
               <table className="w-full text-center text-xs whitespace-nowrap">
                 <thead className="bg-slate-50 text-slate-400 font-bold uppercase tracking-wider border-b border-slate-100">
                   <tr>
+                    <th className="p-3.5 w-10"></th>
                     <th className="p-3.5 text-left">Date / Period</th>
                     <th className="p-3.5 text-left">Class</th>
                     <th className="p-3.5 text-left">Subject</th>
@@ -381,48 +882,149 @@ export default function FacultyDetailsView({ faculty, onBack }) {
                 </thead>
                 <tbody className="divide-y divide-slate-50 font-semibold text-slate-700">
                   {sessionsList.map(s => (
-                    <tr key={s._id} className="hover:bg-slate-50/50 transition">
-                      <td className="p-3.5 text-left">
-                        <span className="block font-bold text-slate-800">{new Date(s.date).toLocaleDateString()}</span>
-                        <span className="block text-[9px] text-slate-400 font-mono mt-0.5">Period {s.period}</span>
-                      </td>
-                      <td className="p-3.5 text-left">
-                        <span className="block font-bold text-slate-800">{s.class || 'N/A'}</span>
-                      </td>
-                      <td className="p-3.5 text-left">
-                        <span className="block font-bold text-slate-800">{s.subjectCode}</span>
-                        <span className="block text-[9px] text-slate-400 mt-0.5">{s.subjectName}</span>
-                      </td>
-                      <td className="p-3.5 text-center">
-                        {s.locked ? (
-                          <div className="inline-flex flex-col items-center">
-                            <span className="text-emerald-600 font-extrabold text-xs">{s.attendancePercentage}%</span>
-                            <span className="text-[9px] text-slate-400 font-bold mt-0.5">Rate ({s.totalStudents} students)</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-400 font-medium italic">Un-finalized</span>
-                        )}
-                      </td>
-                      <td className="p-3.5 text-center text-[11px] text-slate-500">
-                        {s.locked ? (
-                          <span className="font-medium text-slate-600">{formatDateTime(s.submissionTime)}</span>
-                        ) : (
-                          <span className="text-rose-500 font-black tracking-wide uppercase text-[9px]">Awaiting Lock</span>
-                        )}
-                      </td>
-                      <td className="p-3.5 text-center">
-                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                          s.locked ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                        }`}>
-                          {s.locked ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3 animate-spin" />}
-                          {s.locked ? 'Completed' : 'Pending'}
-                        </span>
-                      </td>
-                    </tr>
+                    <React.Fragment key={s._id}>
+                      <tr className="hover:bg-slate-50/50 transition">
+                        <td className="p-3.5 text-center">
+                          <button 
+                            onClick={() => toggleSessionExpand(s._id)}
+                            className="p-1 hover:bg-slate-100 rounded transition text-slate-400 hover:text-indigo-600"
+                            title="Toggle Student Details"
+                          >
+                            {expandedSessionIds[s._id] ? (
+                              <ChevronUp className="w-4 h-4 text-indigo-650" />
+                            ) : (
+                              <ChevronDown className="w-4 h-4" />
+                            )}
+                          </button>
+                        </td>
+                        <td className="p-3.5 text-left">
+                          <span className="block font-bold text-slate-800">{new Date(s.date).toLocaleDateString()}</span>
+                          <span className="block text-[9px] text-slate-400 font-mono mt-0.5">Period {s.period}</span>
+                        </td>
+                        <td className="p-3.5 text-left">
+                          <span className="block font-bold text-slate-800">{s.class || 'N/A'}</span>
+                        </td>
+                        <td className="p-3.5 text-left">
+                          <span className="block font-bold text-slate-800">{s.subjectCode}</span>
+                          <span className="block text-[9px] text-slate-400 mt-0.5">{s.subjectName}</span>
+                        </td>
+                        <td className="p-3.5 text-center">
+                          {s.locked ? (
+                            <div className="inline-flex flex-col items-center">
+                              <span className="text-emerald-600 font-extrabold text-xs">{s.attendancePercentage}%</span>
+                              <span className="text-[9px] text-slate-400 font-bold mt-0.5">Rate ({s.totalStudents} students)</span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 font-medium italic">Un-finalized</span>
+                          )}
+                        </td>
+                        <td className="p-3.5 text-center text-[11px] text-slate-500">
+                          {s.locked ? (
+                            <span className="font-medium text-slate-600">{formatDateTime(s.submissionTime)}</span>
+                          ) : (
+                            <span className="text-rose-500 font-black tracking-wide uppercase text-[9px]">Awaiting Lock</span>
+                          )}
+                        </td>
+                        <td className="p-3.5 text-center">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            s.locked ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                          }`}>
+                            {s.locked ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3 animate-spin" />}
+                            {s.locked ? 'Completed' : 'Pending'}
+                          </span>
+                        </td>
+                      </tr>
+                      {expandedSessionIds[s._id] && (
+                        <tr className="bg-slate-50/30">
+                          <td colSpan="7" className="p-4 border-b border-slate-100">
+                            <div className="bg-white rounded-xl border border-slate-200/70 p-4 shadow-sm max-h-[300px] overflow-y-auto">
+                              <div className="flex items-center justify-between border-b pb-2 mb-3">
+                                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                                  <BookOpen className="w-4 h-4 text-indigo-650" />
+                                  Student Attendance Details ({s.class})
+                                </h4>
+                                <span className="text-[10px] font-bold text-slate-400">
+                                  Session ID: {s._id}
+                                </span>
+                              </div>
+
+                              {detailsLoading[s._id] ? (
+                                <div className="flex items-center justify-center py-6 gap-2 text-slate-550 font-bold text-xs">
+                                  <Loader2 className="w-4 h-4 text-indigo-655 animate-spin" />
+                                  Fetching attendance records...
+                                </div>
+                              ) : detailsError[s._id] ? (
+                                <div className="text-center py-4 space-y-2">
+                                  <p className="text-xs text-rose-500 font-bold">{detailsError[s._id]}</p>
+                                  <button 
+                                    onClick={() => {
+                                      setSessionDetails(prev => {
+                                        const copy = { ...prev };
+                                        delete copy[s._id];
+                                        return copy;
+                                      });
+                                      toggleSessionExpand(s._id);
+                                    }}
+                                    className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[10px] font-bold transition"
+                                  >
+                                    Retry
+                                  </button>
+                                </div>
+                              ) : !sessionDetails[s._id] || sessionDetails[s._id].length === 0 ? (
+                                <p className="text-slate-400 italic text-xs py-4 text-center">No student check-in records found for this session.</p>
+                              ) : (
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-left text-xs border-collapse">
+                                    <thead className="bg-slate-50/70 text-slate-450 font-black uppercase tracking-wider border-b border-slate-200">
+                                      <tr>
+                                        <th className="p-2 w-10">#</th>
+                                        <th className="p-2">Register Number</th>
+                                        <th className="p-2">Roll Number</th>
+                                        <th className="p-2">Student Name</th>
+                                        <th className="p-2 text-center">Status</th>
+                                        <th className="p-2">Remarks</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                                      {sessionDetails[s._id].map((record, index) => {
+                                        const student = record.student || {};
+                                        const isPresent = record.status === 'Present' || record.status === 'Late' || record.status === 'On-Duty' || record.status === 'On Duty';
+                                        
+                                        return (
+                                          <tr key={record._id || index} className="hover:bg-slate-50/40">
+                                            <td className="p-2 font-bold text-slate-400 font-mono">{index + 1}</td>
+                                            <td className="p-2 font-mono font-bold text-slate-800">{student.registerNumber || 'N/A'}</td>
+                                            <td className="p-2 font-mono text-slate-500">{student.rollNumber || 'N/A'}</td>
+                                            <td className="p-2 font-extrabold text-slate-750">{student.name || 'N/A'}</td>
+                                            <td className="p-2 text-center">
+                                              <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                                isPresent 
+                                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
+                                                  : 'bg-rose-50 text-rose-700 border border-rose-100'
+                                              }`}>
+                                                {isPresent ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                                                {record.status}
+                                              </span>
+                                            </td>
+                                            <td className="p-2 text-slate-500 font-normal italic text-[11px] max-w-[150px] truncate" title={record.remarks}>
+                                              {record.remarks || '-'}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   ))}
                   {sessionsList.length === 0 && (
                     <tr>
-                      <td colSpan="6" className="p-10 text-center text-slate-400 italic">No attendance sessions recorded in database.</td>
+                      <td colSpan="7" className="p-10 text-center text-slate-400 italic">No attendance sessions recorded in database.</td>
                     </tr>
                   )}
                 </tbody>
@@ -432,28 +1034,28 @@ export default function FacultyDetailsView({ faculty, onBack }) {
         </div>
       )}
 
-      {/* Tab Content 3: Compliance Alerts */}
+      {/* Tab Content 3: Pending & Missed Submissions */}
       {activeTab === 'compliance' && (
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden print-card">
           <div className="p-6 border-b border-slate-100 bg-slate-50/50">
-            <h3 className="text-base font-extrabold text-slate-800">Compliance & Missed Submissions Alert</h3>
-            <p className="text-xs font-semibold text-slate-500 mt-0.5">Automated checks matching active weekly schedules against conducted sessions in the last 30 days.</p>
+            <h3 className="text-base font-extrabold text-slate-800">Pending & Missed Submissions</h3>
+            <p className="text-xs font-semibold text-slate-500 mt-0.5">Automated compliance trail listing started but un-locked sessions and missed classes in the last 30 days.</p>
           </div>
 
           <div className="p-6">
-            {missedSubmissions.length === 0 ? (
+            {pendingList.length === 0 ? (
               <div className="bg-emerald-50/40 border border-emerald-100 p-8 rounded-2xl text-center space-y-3">
                 <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
-                <h4 className="font-extrabold text-emerald-800 text-sm uppercase">Excellent Submission Compliance!</h4>
-                <p className="text-xs text-emerald-600 font-semibold max-w-md mx-auto">This faculty member has successfully completed and submitted attendance for all assigned slots in their weekly timetable in the past 30 days.</p>
+                <h4 className="font-extrabold text-emerald-800 text-sm uppercase">All Attendance Submitted!</h4>
+                <p className="text-xs text-emerald-600 font-semibold max-w-md mx-auto">This faculty member has successfully completed and locked attendance for all scheduled classes and started sessions.</p>
               </div>
             ) : (
               <div className="space-y-4">
                 <div className="bg-rose-50 border border-rose-200 p-4 rounded-xl flex gap-3 items-start">
                   <AlertTriangle className="text-rose-600 w-5.5 h-5.5 shrink-0 mt-0.5" />
                   <div>
-                    <h4 className="font-extrabold text-rose-800 text-xs uppercase tracking-wider">Unsubmitted Lectures Detected</h4>
-                    <p className="text-rose-700 text-xs font-semibold mt-1">The system detected {stats.missedSubmissionsCount} slots in the last 30 days where the timetable specifies this faculty member was assigned to take lectures, but no corresponding check-in sessions were initiated.</p>
+                    <h4 className="font-extrabold text-rose-800 text-xs uppercase tracking-wider">Pending Actions Detected</h4>
+                    <p className="text-rose-700 text-xs font-semibold mt-1">The system detected {pendingList.length} total pending submissions (including started sessions awaiting lock and completely missed scheduled slots) requiring attention.</p>
                   </div>
                 </div>
 
@@ -465,26 +1067,54 @@ export default function FacultyDetailsView({ faculty, onBack }) {
                         <th className="p-3">Period / Time</th>
                         <th className="p-3 text-left">Assigned Subject</th>
                         <th className="p-3 text-left">Target Class</th>
+                        <th className="p-3 text-center">Status / Type</th>
                         <th className="p-3">Room</th>
+                        <th className="p-3">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50 font-semibold text-slate-700">
-                      {missedSubmissions.map((m, idx) => (
-                        <tr key={idx} className="hover:bg-rose-50/20 transition">
+                      {pendingList.map((p, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50/50 transition">
                           <td className="p-3 text-left font-bold text-slate-800">
-                            {new Date(m.date).toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' })}
-                            <span className="block text-[9px] text-slate-400 mt-0.5">{m.dayOfWeek}</span>
+                            {new Date(p.date).toLocaleDateString('default', { month: 'short', day: 'numeric', year: 'numeric' })}
+                            <span className="block text-[9px] text-slate-400 mt-0.5">
+                              {new Date(p.date).toLocaleDateString('default', { weekday: 'long' })}
+                            </span>
                           </td>
                           <td className="p-3 text-center">
-                            <span className="font-bold text-slate-800">{m.period}</span>
-                            <span className="block text-[9px] text-slate-400 font-mono mt-0.5">{m.time}</span>
+                            <span className="font-bold text-slate-800">{p.period}</span>
+                            <span className="block text-[9px] text-slate-400 font-mono mt-0.5">{p.time}</span>
                           </td>
                           <td className="p-3 text-left">
-                            <span className="block font-bold text-slate-800">{m.subjectCode}</span>
-                            <span className="block text-[9px] text-slate-400 mt-0.5 truncate max-w-[150px]" title={m.subjectName}>{m.subjectName}</span>
+                            <span className="block font-bold text-slate-800">{p.subjectCode}</span>
+                            <span className="block text-[9px] text-slate-400 mt-0.5 truncate max-w-[150px]" title={p.subjectName}>{p.subjectName}</span>
                           </td>
-                          <td className="p-3 text-left font-bold text-slate-800">{m.class}</td>
-                          <td className="p-3 text-center text-slate-600">{m.classroom}</td>
+                          <td className="p-3 text-left font-bold text-slate-800">{p.class}</td>
+                          <td className="p-3 text-center">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              p.type === 'Session Started (Pending Lock)' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
+                            }`}>
+                              {p.type === 'Session Started (Pending Lock)' ? 'Pending Lock' : 'Missed Class'}
+                            </span>
+                          </td>
+                          <td className="p-3 text-center text-slate-600">{p.classroom}</td>
+                          <td className="p-3 text-center">
+                            {p.type === 'Session Started (Pending Lock)' ? (
+                              <button 
+                                onClick={() => handleMarkSlot(p)}
+                                className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[10px] font-black uppercase shadow-sm transition"
+                              >
+                                Review & Lock
+                              </button>
+                            ) : (
+                              <button 
+                                onClick={() => handleMarkSlot(p)}
+                                className="px-3.5 py-1.5 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-[10px] font-black uppercase shadow-sm transition"
+                              >
+                                Mark Attendance
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -738,6 +1368,9 @@ export default function FacultyDetailsView({ faculty, onBack }) {
             )}
           </div>
         </div>
+      )}
+      {activeTab === 'advisor' && faculty.classAdvisorDetails?.isClassAdvisor && (
+        <AdvisorDashboardView faculty={faculty} />
       )}
 
     </div>

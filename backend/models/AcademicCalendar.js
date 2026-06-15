@@ -10,4 +10,6 @@ const academicCalendarSchema = new mongoose.Schema({
   term: { type: String } // e.g., "Fall 2026"
 }, { timestamps: true });
 
+academicCalendarSchema.index({ date: 1 });
+
 module.exports = mongoose.model('AcademicCalendar', academicCalendarSchema);

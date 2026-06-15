@@ -12,6 +12,7 @@ const Mark = require('./models/Mark');
 const Settings = require('./models/Settings');
 const Notification = require('./models/Notification');
 const Log = require('./models/Log');
+const Workload = require('./models/Workload');
 
 const seedDemoData = async () => {
   try {
@@ -29,9 +30,10 @@ const seedDemoData = async () => {
       Mark.deleteMany({}),
       Settings.deleteMany({}),
       Notification.deleteMany({}),
-      Log.deleteMany({})
+      Log.deleteMany({}),
+      Workload.deleteMany({})
     ]);
-    console.log('Cleared all previous collections');
+    console.log('Cleared all previous collections including Workloads');
 
     const salt = await bcrypt.genSalt(10);
     const defaultPassword = await bcrypt.hash('password123', salt);
@@ -150,6 +152,17 @@ const seedDemoData = async () => {
           isActive: true
         });
 
+        // Workload for Subject 1
+        await Workload.create({
+          faculty: fac1,
+          subject: sub1._id,
+          department: dept,
+          year,
+          semester: sub1.semester,
+          section: 'A',
+          assignedHours: 45
+        });
+
         // Subject 2
         const sub2 = await Subject.create({
           name: `${dept} Year ${year} Core 2`,
@@ -162,6 +175,17 @@ const seedDemoData = async () => {
           subjectType: 'Theory',
           assignedFaculty: [fac2],
           isActive: true
+        });
+
+        // Workload for Subject 2
+        await Workload.create({
+          faculty: fac2,
+          subject: sub2._id,
+          department: dept,
+          year,
+          semester: sub2.semester,
+          section: 'A',
+          assignedHours: 36
         });
 
         subjectsMap[key].push(sub1, sub2);
@@ -288,7 +312,7 @@ const seedDemoData = async () => {
     console.log(`Seeded ${createdCalendar.length} Academic Calendar Days`);
 
     // 10. Seed Historical Attendance & Marks
-    const SEED_HISTORICAL_ATTENDANCE = false;
+    const SEED_HISTORICAL_ATTENDANCE = true;
     if (SEED_HISTORICAL_ATTENDANCE) {
       const workingDays = createdCalendar.filter(c => c.type === 'Working Day');
       const pastWorkingDays = workingDays.filter(w => new Date(w.date) < new Date());

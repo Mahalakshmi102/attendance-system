@@ -9,7 +9,7 @@ import BulkUpload from './BulkUpload';
 import StudentModal from './StudentModal';
 import StudentDetailsView from './StudentDetailsView';
 import { useAuth } from '../../context/AuthContext';
-import { updateUser } from '../../api/adminApi';
+import { updateUser, bulkDeleteUsers } from '../../api/adminApi';
 
 export default function StudentsManage({ departmentOnly }) {
   const { user } = useAuth();
@@ -21,6 +21,7 @@ export default function StudentsManage({ departmentOnly }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editStudent, setEditStudent] = useState(null);
   const [selectedStudentId, setSelectedStudentId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -121,6 +122,7 @@ export default function StudentsManage({ departmentOnly }) {
 
     setFilteredStudents(result);
     setCurrentPage(1);
+    setSelectedIds([]);
   }, [searchQuery, deptFilter, academicYearFilter, yearFilter, semFilter, secFilter, students]);
 
   const handleReset = () => {
@@ -178,6 +180,81 @@ export default function StudentsManage({ departmentOnly }) {
       fetchStudents();
     } catch (err) {
       alert(err.response?.data?.message || 'Error resetting password');
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (filteredStudents.length === 0) {
+      alert('No students found in the current filtered view to delete.');
+      return;
+    }
+
+    const isFiltered = searchQuery || deptFilter || academicYearFilter || yearFilter || semFilter || secFilter || batchFilter;
+    const warningMessage = isFiltered
+      ? `Are you sure you want to permanently delete all ${filteredStudents.length} filtered students?`
+      : `WARNING: No filters are applied. Are you sure you want to permanently delete ALL ${filteredStudents.length} students in the directory?`;
+
+    if (!window.confirm(warningMessage)) return;
+    
+    const secondConfirm = window.confirm(`This action is permanent and cannot be undone. All selected student accounts and their academic/attendance records will be deleted.\n\nAre you absolutely sure?`);
+    if (!secondConfirm) return;
+
+    const confirmationText = window.prompt(`To proceed, please type "DELETE" below to confirm bulk deletion:`);
+    if (confirmationText !== 'DELETE') {
+      alert('Bulk deletion cancelled: Confirmation text did not match "DELETE".');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const idsToDelete = filteredStudents.map(s => s._id);
+      const res = await bulkDeleteUsers(idsToDelete);
+      alert(`Successfully deleted ${res.data.deletedCount} students.`);
+      fetchStudents();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error performing bulk deletion.');
+      setLoading(false);
+    }
+  };
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      const pageIds = paginatedData.map(s => s._id);
+      setSelectedIds(prev => Array.from(new Set([...prev, ...pageIds])));
+    } else {
+      const pageIds = paginatedData.map(s => s._id);
+      setSelectedIds(prev => prev.filter(id => !pageIds.includes(id)));
+    }
+  };
+
+  const handleSelectRow = (id) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    
+    if (!window.confirm(`Are you sure you want to permanently delete all ${selectedIds.length} selected students?`)) return;
+    const secondConfirm = window.confirm(`This action is permanent and cannot be undone. All selected student accounts and their academic/attendance records will be deleted.\n\nAre you absolutely sure?`);
+    if (!secondConfirm) return;
+
+    const confirmationText = window.prompt(`To proceed, please type "DELETE" below to confirm bulk deletion:`);
+    if (confirmationText !== 'DELETE') {
+      alert('Bulk deletion cancelled: Confirmation text did not match "DELETE".');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await bulkDeleteUsers(selectedIds);
+      alert(`Successfully deleted ${res.data.deletedCount} students.`);
+      setSelectedIds([]);
+      fetchStudents();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error performing bulk deletion.');
+      setLoading(false);
     }
   };
 
@@ -329,6 +406,22 @@ export default function StudentsManage({ departmentOnly }) {
             <button onClick={handleReset} className="flex-1 md:flex-initial bg-white border border-slate-300 text-slate-700 font-bold py-2 px-6 rounded-lg flex items-center justify-center gap-2 hover:bg-slate-50 transition text-sm shadow-sm h-[38px]">
               <RotateCcw className="w-4 h-4" /> Reset
             </button>
+            {filteredStudents.length > 0 && (
+              <button 
+                onClick={handleBulkDelete} 
+                className="flex-1 md:flex-initial bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 px-6 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-rose-500/20 text-sm h-[38px]"
+              >
+                Delete Filtered ({filteredStudents.length})
+              </button>
+            )}
+            {selectedIds.length > 0 && (
+              <button 
+                onClick={handleDeleteSelected} 
+                className="flex-1 md:flex-initial bg-red-650 hover:bg-red-750 text-white font-bold py-2 px-6 rounded-lg flex items-center justify-center gap-2 transition shadow-md shadow-red-500/20 text-sm h-[38px]"
+              >
+                Delete Selected ({selectedIds.length})
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -343,14 +436,22 @@ export default function StudentsManage({ departmentOnly }) {
           {paginatedData.map((s) => (
             <div key={s._id} className="p-4 space-y-3">
               <div className="flex justify-between items-start">
-                <div>
-                  <span 
-                    onClick={() => setSelectedStudentId(s._id)} 
-                    className="text-sm font-extrabold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer block"
-                  >
-                    {s.name}
-                  </span>
-                  <span className="text-[11px] text-slate-405 font-mono font-bold">{s.registerNumber || 'N/A'}</span>
+                <div className="flex items-start gap-2.5">
+                  <input 
+                    type="checkbox" 
+                    checked={selectedIds.includes(s._id)} 
+                    onChange={() => handleSelectRow(s._id)}
+                    className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer mt-1"
+                  />
+                  <div>
+                    <span 
+                      onClick={() => setSelectedStudentId(s._id)} 
+                      className="text-sm font-extrabold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer block"
+                    >
+                      {s.name}
+                    </span>
+                    <span className="text-[11px] text-slate-405 font-mono font-bold">{s.registerNumber || 'N/A'}</span>
+                  </div>
                 </div>
                 <span className={`px-2.5 py-0.5 rounded text-[9px] font-black uppercase ${s.isActive !== false ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-50 text-rose-600 border border-rose-100'}`}>
                   {s.isActive !== false ? 'Active' : 'Inactive'}
@@ -375,6 +476,14 @@ export default function StudentsManage({ departmentOnly }) {
                 <div>
                   <span className="block text-[9px] uppercase font-bold text-slate-400">Mobile</span>
                   <span className="text-slate-700">{s.mobile || '-'}</span>
+                </div>
+                <div>
+                  <span className="block text-[9px] uppercase font-bold text-slate-400">Attendance</span>
+                  <span className={`font-black ${
+                    (s.attendance?.percentage ?? 0) >= 75 ? 'text-emerald-600' : 'text-rose-600'
+                  }`}>
+                    {s.attendance?.percentage !== undefined ? `${s.attendance.percentage}%` : '0%'}
+                  </span>
                 </div>
               </div>
 
@@ -413,6 +522,14 @@ export default function StudentsManage({ departmentOnly }) {
           <table className="w-full text-center text-sm whitespace-nowrap">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
+                <th className="p-4 text-center border-r border-slate-100 w-12">
+                  <input 
+                    type="checkbox" 
+                    onChange={handleSelectAll} 
+                    checked={paginatedData.length > 0 && paginatedData.every(s => selectedIds.includes(s._id))}
+                    className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                  />
+                </th>
                 <th className="p-4 font-bold text-slate-800 text-left border-r border-slate-100">Register No.</th>
                 <th className="p-4 font-bold text-slate-800 text-left border-r border-slate-100">Student Name</th>
                 <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Department</th>
@@ -423,13 +540,22 @@ export default function StudentsManage({ departmentOnly }) {
                 <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Email</th>
                 <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Mobile No.</th>
                 <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Parent Mobile</th>
+                <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Attendance %</th>
                 <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Status</th>
                 <th className="p-4 font-bold text-slate-800 w-16">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {paginatedData.map((s) => (
-                <tr key={s._id} className="hover:bg-slate-50 transition">
+                <tr key={s._id} className="hover:bg-slate-55 transition">
+                  <td className="p-4 text-center border-r border-slate-100 w-12">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedIds.includes(s._id)} 
+                      onChange={() => handleSelectRow(s._id)}
+                      className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                    />
+                  </td>
                   <td className="p-4 font-bold text-slate-700 text-left border-r border-slate-100">{s.registerNumber || '-'}</td>
                   <td className="p-4 font-bold text-slate-800 text-left border-r border-slate-100">
                     <span 
@@ -447,6 +573,15 @@ export default function StudentsManage({ departmentOnly }) {
                   <td className="p-4 text-slate-600 border-r border-slate-100">{s.email}</td>
                   <td className="p-4 text-slate-600 border-r border-slate-100">{s.mobile || '-'}</td>
                   <td className="p-4 text-slate-600 border-r border-slate-100">{s.parentDetails?.mobile || '-'}</td>
+                  <td className="p-4 border-r border-slate-100 font-bold">
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                      (s.attendance?.percentage ?? 0) >= 75 
+                        ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' 
+                        : 'bg-rose-50 text-rose-600 border border-rose-100'
+                    }`}>
+                      {s.attendance?.percentage !== undefined ? `${s.attendance.percentage}%` : '0%'}
+                    </span>
+                  </td>
                   <td className="p-4 border-r border-slate-100">
                     <span className={`px-3 py-1 rounded text-xs font-bold ${s.isActive !== false ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
                       {s.isActive !== false ? 'Active' : 'Inactive'}

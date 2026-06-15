@@ -1,5 +1,48 @@
 @import "tailwindcss";
 
+@theme {
+  --color-indigo-650: #4f46e5;
+  --color-indigo-850: #312e81;
+  --color-blue-850: #1e3a8a;
+  --color-purple-650: #7c3aed;
+  --color-rose-650: #e11d48;
+  --color-slate-450: #94a3b8;
+  --color-slate-455: #64748b;
+  --color-slate-650: #475569;
+  --color-slate-655: #334155;
+  --color-indigo-605: #4f46e5;
+}
+
 body {
   font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
 }
+
+@keyframes slow-zoom {
+  0% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-slow-zoom {
+  animation: slow-zoom 6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes unblur-zoom {
+  0% {
+    filter: blur(12px);
+    transform: scale(1.12);
+  }
+  100% {
+    filter: blur(0px);
+    transform: scale(1);
+  }
+}
+
+.animate-unblur-zoom {
+  animation: unblur-zoom 2.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+

@@ -40,3 +40,5 @@ lerna-debug.log*
 # Uploads and temporary files
 backend/uploads/*
 !backend/uploads/.gitkeep
+backend/scratch/
+

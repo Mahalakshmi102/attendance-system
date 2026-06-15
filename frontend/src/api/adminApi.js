@@ -17,21 +17,25 @@ export const getSubjects = () => api.get('/subjects');
 export const addSubject = (data) => api.post('/subjects', data);
 export const updateSubject = (id, data) => api.put(`/subjects/${id}`, data);
 export const deleteSubject = (id) => api.delete(`/subjects/${id}`);
+export const bulkDeleteSubjects = (ids) => api.post('/subjects/bulk-delete', { ids });
 
 export const getUsers = () => api.get('/users');
 export const addUser = (data) => api.post('/users', data);
 export const updateUser = (id, data) => api.put(`/users/${id}`, data);
 export const deleteUser = (id) => api.delete(`/users/${id}`);
+export const bulkDeleteUsers = (ids) => api.post('/users/bulk-delete', { ids });
 
 export const getTimetable = () => api.get('/timetable');
 export const addTimetable = (data) => api.post('/timetable', data);
 export const updateTimetable = (id, data) => api.put(`/timetable/${id}`, data);
 export const deleteTimetable = (id) => api.delete(`/timetable/${id}`);
+export const bulkDeleteTimetable = (ids) => api.post('/timetable/bulk-delete', { ids });
 
 export const getCalendar = () => api.get('/calendar');
 export const addCalendarEvent = (data) => api.post('/calendar', data);
 export const updateCalendarEvent = (id, data) => api.put(`/calendar/${id}`, data);
 export const deleteCalendarEvent = (id) => api.delete(`/calendar/${id}`);
+export const bulkDeleteCalendarEvents = (ids) => api.post('/calendar/bulk-delete', { ids });
 
 export const bulkUpload = (type, file) => {
   const formData = new FormData();
@@ -64,5 +68,10 @@ export const downloadExcelReport = (endpoint, params) => axios.get(`${API_BASE_U
 });
 
 export const getFacultyAttendanceActivities = (id) => api.get(`/faculty/${id}/attendance-activities`);
+
+export const getWorkloads = (facultyId) => api.get(`/workloads?facultyId=${facultyId || ''}`);
+export const addWorkload = (data) => api.post('/workloads', data);
+export const updateWorkload = (id, data) => api.put(`/workloads/${id}`, data);
+export const deleteWorkload = (id) => api.delete(`/workloads/${id}`);
 
 export default api;

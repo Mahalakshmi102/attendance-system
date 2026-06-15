@@ -1,20 +1,23 @@
 import { useState, useEffect } from 'react';
-import { getUsers, addUser, updateUser, deleteUser } from '../../api/adminApi';
+import { getUsers, addUser, updateUser, deleteUser, bulkDeleteUsers } from '../../api/adminApi';
 import BulkUpload from './BulkUpload';
 
 export default function UsersManage({ roleType }) {
   const [users, setUsers] = useState([]);
+  const [selectedIds, setSelectedIds] = useState([]);
   const [form, setForm] = useState({ name: '', email: '', password: '', dob: '', role: roleType, department: '', semester: 0, batch: '' });
 
   useEffect(() => {
     fetchUsers();
     setForm(prev => ({ ...prev, role: roleType, dob: '', batch: '' }));
+    setSelectedIds([]);
   }, [roleType]);
 
   const fetchUsers = async () => {
     try {
       const res = await getUsers();
       setUsers(res.data.filter(u => u.role === roleType));
+      setSelectedIds([]);
     } catch (err) {
       console.error(err);
     }
@@ -86,6 +89,43 @@ export default function UsersManage({ roleType }) {
     }
   };
 
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedIds(users.map(u => u._id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const handleSelectRow = (id) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    
+    if (!window.confirm(`Are you sure you want to permanently delete all ${selectedIds.length} selected ${roleType}s?`)) return;
+    const secondConfirm = window.confirm(`This action is permanent and cannot be undone. All selected accounts and their credentials will be deleted.\n\nAre you absolutely sure?`);
+    if (!secondConfirm) return;
+
+    const confirmationText = window.prompt(`To proceed, please type "DELETE" below to confirm bulk deletion:`);
+    if (confirmationText !== 'DELETE') {
+      alert('Bulk deletion cancelled: Confirmation text did not match "DELETE".');
+      return;
+    }
+
+    try {
+      await bulkDeleteUsers(selectedIds);
+      alert(`Successfully deleted ${selectedIds.length} ${roleType}s.`);
+      setSelectedIds([]);
+      fetchUsers();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error performing bulk deletion.');
+    }
+  };
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-4">{roleType} Management</h2>
@@ -107,11 +147,33 @@ export default function UsersManage({ roleType }) {
         <button type="submit" className="bg-indigo-600 text-white p-2 rounded hover:bg-indigo-700 transition font-medium col-span-2">Add {roleType}</button>
       </form>
 
+      {selectedIds.length > 0 && (
+        <div className="flex justify-between items-center mb-4 bg-rose-50 border border-rose-100 rounded-xl p-3">
+          <span className="text-xs font-bold text-rose-700">
+            {selectedIds.length} {roleType}s selected for action
+          </span>
+          <button 
+            onClick={handleDeleteSelected}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition shadow-sm"
+          >
+            Delete Selected ({selectedIds.length})
+          </button>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl shadow-[0_2px_12px_-4px_rgba(0,0,0,0.05)] border border-slate-100 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-center text-sm whitespace-nowrap">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
+                <th className="p-4 w-12 text-center border-r border-slate-100">
+                  <input 
+                    type="checkbox"
+                    onChange={handleSelectAll}
+                    checked={users.length > 0 && users.every(u => selectedIds.includes(u._id))}
+                    className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                  />
+                </th>
                 <th className="p-4 font-bold text-slate-800 text-left border-r border-slate-100">Name</th>
                 <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Email</th>
                 <th className="p-4 font-bold text-slate-800 border-r border-slate-100">Department</th>
@@ -129,6 +191,14 @@ export default function UsersManage({ roleType }) {
             <tbody className="divide-y divide-slate-100">
               {users.map((u) => (
                 <tr key={u._id} className="hover:bg-slate-50 transition">
+                  <td className="p-4 text-center border-r border-slate-100">
+                    <input 
+                      type="checkbox"
+                      checked={selectedIds.includes(u._id)}
+                      onChange={() => handleSelectRow(u._id)}
+                      className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                    />
+                  </td>
                   <td className="p-4 font-bold text-slate-800 text-left border-r border-slate-100">{u.name}</td>
                   <td className="p-4 text-slate-600 border-r border-slate-100">{u.email}</td>
                   <td className="p-4 font-semibold text-slate-600 border-r border-slate-100">{u.department}</td>
@@ -158,7 +228,7 @@ export default function UsersManage({ roleType }) {
               ))}
             {users.length === 0 && (
               <tr>
-                <td className="p-4 text-gray-500 italic" colSpan={roleType === 'Student' ? 8 : 6}>No {roleType.toLowerCase()}s found.</td>
+                <td className="p-4 text-gray-500 italic" colSpan={roleType === 'Student' ? 9 : 7}>No {roleType.toLowerCase()}s found.</td>
               </tr>
             )}
           </tbody>

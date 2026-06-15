@@ -10,15 +10,15 @@ class AttendanceEngine {
   }
 
   initCronJobs() {
-    // Run every hour during college hours (8 AM to 5 PM) on weekdays
-    cron.schedule('0 8-17 * * 1-5', async () => {
-      console.log('Running Smart Attendance Engine Tasks...');
+    // Run every hour during college hours (8 AM to 5 PM) on weekdays/Saturdays
+    cron.schedule('0 8-17 * * 1-6', async () => {
+      console.log('Running NITify Engine Tasks...');
       await this.processAttendanceUnlock();
       await this.processAttendanceLock();
     });
 
     // Run daily at 6 PM to calculate warnings
-    cron.schedule('0 18 * * 1-5', async () => {
+    cron.schedule('0 18 * * 1-6', async () => {
        console.log('Running Attendance Warning Engine...');
        await this.processWarnings();
     });

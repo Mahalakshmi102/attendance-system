@@ -47,6 +47,7 @@ const NotificationsManage = () => {
             {(isHOD 
               ? [
                   { id: 'all', label: 'All Department', icon: Building, color: 'text-indigo-600 bg-indigo-50 border-indigo-200 hover:bg-indigo-100/30' },
+                  { id: 'admins', label: 'Admins Only', icon: Briefcase, color: 'text-rose-600 bg-rose-50 border-rose-200 hover:bg-rose-100/30' },
                   { id: 'faculty', label: 'Dept Faculty Only', icon: Users, color: 'text-emerald-600 bg-emerald-50 border-emerald-200 hover:bg-emerald-100/30' },
                   { id: 'students', label: 'Dept Students Only', icon: GraduationCap, color: 'text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100/30' }
                 ]
@@ -99,7 +100,7 @@ const NotificationsManage = () => {
           <Send className="w-4 h-4 shrink-0" /> 
           {loading ? 'Broadcasting...' : `Send Notification to ${
             isHOD
-              ? (target === 'all' ? 'All Department' : target === 'faculty' ? 'Dept Faculty' : 'Dept Students')
+              ? (target === 'all' ? 'All Department' : target === 'admins' ? 'Admins Only' : target === 'faculty' ? 'Dept Faculty' : 'Dept Students')
               : (target === 'all' ? 'College' : target === 'hods' ? 'HODs' : target === 'faculty' ? 'Faculty' : 'Students')
           }`}
         </button>

@@ -161,7 +161,7 @@ exports.deleteSubject = async (req, res) => {
 
     await createLog('Deleted Subject', req.user, 'Subject', subject._id, {
       oldValue,
-      reason: req.body.reason || 'Curriculum cleanup',
+      reason: (req.body && req.body.reason) || 'Curriculum cleanup',
       targetDept: subject.department || 'General',
       targetSemester: subject.semester,
       details: `Deleted subject: ${subject.name} (${subject.code})`
@@ -173,6 +173,7 @@ exports.deleteSubject = async (req, res) => {
 
     res.json({ message: 'Subject deleted successfully' });
   } catch (error) {
+    console.error('deleteSubject error:', error);
     res.status(500).json({ message: 'Error deleting subject' });
   }
 };
@@ -263,7 +264,7 @@ exports.addUser = async (req, res) => {
     const sendEmail = require('../utils/mailer');
     const loginUrl = process.env.FRONTEND_URL || 'http://localhost:5173/login';
     const emailHtml = `
-      <h2>Welcome to Smart Attendance System!</h2>
+      <h2>Welcome to NITify!</h2>
       <p>Dear ${name},</p>
       <p>Your account has been created successfully.</p>
       <p><strong>Login Details:</strong></p>
@@ -278,7 +279,7 @@ exports.addUser = async (req, res) => {
     `;
     await sendEmail({
        to: email,
-       subject: 'Welcome to Smart Attendance System - Login Details',
+       subject: 'Welcome to NITify - Login Details',
        html: emailHtml
     });
     
@@ -483,7 +484,7 @@ exports.deleteUser = async (req, res) => {
 
     await createLog('Deleted User', req.user, 'User', user._id, {
       oldValue,
-      reason: req.body.reason || 'Staff directory deletion',
+      reason: (req.body && req.body.reason) || 'Staff directory deletion',
       targetDept: user.department || 'General',
       targetSemester: user.semester,
       targetSection: user.section,
@@ -503,6 +504,42 @@ exports.deleteUser = async (req, res) => {
   }
 };
 
+exports.bulkDeleteUsers = async (req, res) => {
+  try {
+    const { ids, reason } = req.body || {};
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No user IDs provided for deletion.' });
+    }
+
+    if (req.user.role === 'HoD') {
+      const users = await User.find({ _id: { $in: ids } });
+      const forbidden = users.some(u => u.department !== req.user.department);
+      if (forbidden) {
+        return res.status(403).json({ message: 'Not authorized: You can only delete users of your own department.' });
+      }
+    }
+
+    const deleteResult = await User.deleteMany({ _id: { $in: ids } });
+
+    await createLog('Bulk Deleted Users', req.user, 'User', null, {
+      details: `Bulk deleted ${deleteResult.deletedCount} users.`,
+      reason: reason || 'Bulk administrative cleanup',
+      deletedCount: deleteResult.deletedCount,
+      ids
+    });
+
+    if (req.user.role === 'HoD') {
+      await notifyAdmins(`HOD ${req.user.name} (${req.user.department}) bulk deleted ${deleteResult.deletedCount} users`, 'Warning');
+    }
+
+    res.json({ message: 'Users bulk deleted successfully', deletedCount: deleteResult.deletedCount });
+  } catch (error) {
+    console.error('Error bulk deleting users:', error);
+    res.status(500).json({ message: 'Error bulk deleting users' });
+  }
+};
+
+
 // --- Timetable ---
 exports.getTimetable = async (req, res) => {
   try {
@@ -511,8 +548,16 @@ exports.getTimetable = async (req, res) => {
       const subjects = await Subject.find({ department: req.user.department }).select('_id');
       const subjectIds = subjects.map(s => s._id);
       query.subject = { $in: subjectIds };
-    } else if (req.user.role === 'Faculty') {
+    } else if (req.user.role === 'Faculty' || req.user.role === 'Class Advisor') {
       query.faculty = req.user.id;
+    } else if (req.user.role === 'Student') {
+      const studentDetails = await User.findById(req.user.id).lean();
+      if (studentDetails) {
+        query.department = studentDetails.department;
+        query.year = studentDetails.year;
+        query.semester = studentDetails.semester;
+        query.section = studentDetails.section;
+      }
     }
     const timetable = await Timetable.find(query).populate('subject').populate('faculty', 'name email');
     res.json(timetable);
@@ -755,7 +800,7 @@ exports.updateTimetable = async (req, res) => {
 exports.deleteTimetable = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body;
+    const { reason } = req.body || {};
 
     const timetable = await Timetable.findById(id);
     if (!timetable) return res.status(404).json({ message: 'Timetable entry not found' });
@@ -882,7 +927,7 @@ exports.deleteCalendarEvent = async (req, res) => {
 
     await createLog('Deleted Calendar Event', req.user, 'AcademicCalendar', event._id, {
       oldValue,
-      reason: req.body.reason || 'Calendar slot removal',
+      reason: (req.body && req.body.reason) || 'Calendar slot removal',
       details: `Deleted calendar event: ${event.type} - ${event.description} (${event.term})`
     });
 
@@ -1063,64 +1108,68 @@ exports.getAnalyticsOverview = async (req, res) => {
       });
     }
 
-    // Defaulters List
-    let studentMatch = {};
-    if (req.user.role === 'HoD') {
-      const deptStudents = await User.find({ role: 'Student', department: req.user.department }).select('_id');
-      studentMatch.student = { $in: deptStudents.map(s => s._id) };
-    } else {
-      studentMatch.student = { $exists: true };
-    }
+    // Defaulters List, Class wise Heatmap, and Department Performance
+    const { getLeavePolicies, calculatePercentage } = require('../utils/attendanceCalculator');
+    const policies = await getLeavePolicies();
+    const threshold = policies.attendanceThreshold || 75;
 
-    const studentAttendanceAgg = await Attendance.aggregate([
-      { $match: studentMatch },
-      {
-        $group: {
-          _id: '$student',
-          present: { $sum: { $cond: [{ $eq: ['$status', 'Present'] }, 1, 0] } },
-          late: { $sum: { $cond: [{ $eq: ['$status', 'Late'] }, 1, 0] } },
-          onDuty: { $sum: { $cond: [{ $eq: ['$status', 'On-Duty'] }, 1, 0] } },
-          total: { $sum: 1 }
-        }
-      },
-      {
-        $project: {
-          percentage: {
-            $cond: [{ $gt: ['$total', 0] }, { $multiply: [{ $divide: [{ $add: ['$present', '$late', '$onDuty'] }, '$total'] }, 100] }, 0]
-          }
-        }
-      },
-      { $match: { percentage: { $lt: 75 } } },
-      {
-        $lookup: {
-          from: 'users',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'studentDoc'
-        }
-      },
-      { $unwind: '$studentDoc' },
-      { $sort: { percentage: 1 } },
-      { $limit: 15 }
-    ]);
+    // Fetch all attendance matching attendanceMatch
+    const allMatchingAttendance = await Attendance.find(attendanceMatch)
+      .populate({
+        path: 'session',
+        populate: { path: 'timetable', select: 'department year section' }
+      })
+      .lean();
 
-    const defaultersList = studentAttendanceAgg.map(s => {
+    // 1. Group by student
+    const studentCounts = {};
+    // 2. Group by class
+    const classCounts = {};
+
+    allMatchingAttendance.forEach(rec => {
+      // Student grouping
+      const sId = rec.student.toString();
+      if (!studentCounts[sId]) {
+        studentCounts[sId] = { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 };
+      }
+      studentCounts[sId][rec.status] = (studentCounts[sId][rec.status] || 0) + 1;
+
+      // Class grouping
+      const dept = rec.department || rec.session?.timetable?.department || rec.session?.department || 'General';
+      const yr = rec.year || rec.session?.timetable?.year || rec.session?.year || '1';
+      const sec = rec.section || rec.session?.timetable?.section || rec.session?.section || 'A';
+      const className = `${dept} Y${yr} ${sec}`;
+      
+      if (!classCounts[className]) {
+        classCounts[className] = { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 };
+      }
+      classCounts[className][rec.status] = (classCounts[className][rec.status] || 0) + 1;
+    });
+
+    const studentIdsWithRecords = Object.keys(studentCounts);
+    const studentsWithRecords = await User.find({ _id: { $in: studentIdsWithRecords } }).select('name rollNumber registerNumber department').lean();
+
+    const defaultersListAll = studentsWithRecords.map(s => {
+      const counts = studentCounts[s._id.toString()];
+      const pct = calculatePercentage(counts, policies);
       let warningLevel = 'Warning Level 1';
-      if (s.percentage < 50) {
+      if (pct < 50) {
         warningLevel = 'Critical';
-      } else if (s.percentage < 65) {
+      } else if (pct < 65) {
         warningLevel = 'Warning Level 2';
       }
 
       return {
         id: s._id,
-        rollNo: s.studentDoc.rollNumber || s.studentDoc.registerNumber || 'N/A',
-        name: s.studentDoc.name,
-        attendance: Math.round(s.percentage),
-        department: s.studentDoc.department,
+        rollNo: s.rollNumber || s.registerNumber || 'N/A',
+        name: s.name,
+        attendance: pct,
+        department: s.department,
         warningLevel
       };
-    });
+    }).filter(d => d.attendance < threshold);
+
+    const defaultersList = defaultersListAll.sort((a, b) => a.attendance - b.attendance).slice(0, 15);
 
     // Upcoming Events
     const upcomingEvents = await AcademicCalendar.find({ date: { $gte: targetDate } }).sort({ date: 1 }).limit(5);
@@ -1170,55 +1219,14 @@ exports.getAnalyticsOverview = async (req, res) => {
       });
     }
 
-    // Class wise Heatmap
-    const classWiseAgg = await Attendance.aggregate([
-      { $match: studentMatch },
-      {
-        $lookup: {
-          from: 'sessions',
-          localField: 'session',
-          foreignField: '_id',
-          as: 'sessionDoc'
-        }
-      },
-      { $unwind: '$sessionDoc' },
-      {
-        $lookup: {
-          from: 'timetables',
-          localField: 'sessionDoc.timetable',
-          foreignField: '_id',
-          as: 'timetableDoc'
-        }
-      },
-      { $unwind: '$timetableDoc' },
-      {
-        $group: {
-          _id: {
-            department: '$timetableDoc.department',
-            year: '$timetableDoc.year',
-            section: '$timetableDoc.section'
-          },
-          present: { $sum: { $cond: [{ $eq: ['$status', 'Present'] }, 1, 0] } },
-          late: { $sum: { $cond: [{ $eq: ['$status', 'Late'] }, 1, 0] } },
-          onDuty: { $sum: { $cond: [{ $eq: ['$status', 'On-Duty'] }, 1, 0] } },
-          total: { $sum: 1 }
-        }
-      },
-      {
-        $project: {
-          className: { $concat: ['$_id.department', ' Y', '$_id.year', ' ', '$_id.section'] },
-          percentage: {
-            $cond: [{ $gt: ['$total', 0] }, { $round: [{ $multiply: [{ $divide: [{ $add: ['$present', '$late', '$onDuty'] }, '$total'] }, 100] }, 0] }, 0]
-          }
-        }
-      },
-      { $sort: { percentage: -1 } }
-    ]);
-
-    const classHeatmapList = classWiseAgg.map(c => ({
-      className: c.className || 'General',
-      percentage: c.percentage || 0
-    }));
+    // Class Heatmap List
+    const classHeatmapList = Object.keys(classCounts).map(className => {
+      const pct = calculatePercentage(classCounts[className], policies);
+      return {
+        className,
+        percentage: pct
+      };
+    }).sort((a, b) => b.percentage - a.percentage);
 
     if (classHeatmapList.length === 0) {
       const uniqueBatches = await Timetable.aggregate([
@@ -1242,22 +1250,15 @@ exports.getAnalyticsOverview = async (req, res) => {
       const deptStudents = await User.find({ role: 'Student', department: d }).select('_id');
       const dStudentIds = deptStudents.map(s => s._id);
       
-      const dAttendance = await Attendance.aggregate([
-        { $match: { student: { $in: dStudentIds } } },
-        {
-          $group: {
-            _id: null,
-            present: { $sum: { $cond: [{ $eq: ['$status', 'Present'] }, 1, 0] } },
-            late: { $sum: { $cond: [{ $eq: ['$status', 'Late'] }, 1, 0] } },
-            onDuty: { $sum: { $cond: [{ $eq: ['$status', 'On-Duty'] }, 1, 0] } },
-            total: { $sum: 1 }
-          }
-        }
-      ]);
+      const dAttendanceRecords = await Attendance.find({ student: { $in: dStudentIds } }).select('status').lean();
       
       let percentage = 0;
-      if (dAttendance.length > 0 && dAttendance[0].total > 0) {
-        percentage = Math.round(((dAttendance[0].present + dAttendance[0].late + dAttendance[0].onDuty) / dAttendance[0].total) * 100);
+      if (dAttendanceRecords.length > 0) {
+        const counts = { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 };
+        dAttendanceRecords.forEach(rec => {
+          counts[rec.status] = (counts[rec.status] || 0) + 1;
+        });
+        percentage = calculatePercentage(counts, policies);
       } else {
         percentage = d === 'CSE' ? 86 : d === 'ECE' ? 82 : d === 'MECH' ? 80 : d === 'CIVIL' ? 88 : 85;
       }
@@ -1396,27 +1397,44 @@ exports.saveBulkAttendance = async (req, res) => {
     }
 
     // Prepare bulk operations
-    const bulkOps = records.map(record => ({
-      updateOne: {
-        filter: { session: session._id, student: record.studentId },
-        update: {
-          $set: {
-            session: session._id,
-            student: record.studentId,
-            subject: subjectId,
-            date: new Date(date),
-            period: period || 'H1',
-            status: record.status,
-            remarks: record.remarks || '',
-            markedBy: 'Admin',
-            entryType: 'Manual',
-            updatedBy: req.user.id,
-            markedAt: new Date()
-          }
-        },
-        upsert: true
-      }
-    }));
+    // Fetch all students in bulk to map their class details
+    const studentIds = records.map(r => r.studentId);
+    const students = await User.find({ _id: { $in: studentIds } }).select('department year semester section').lean();
+    const studentMap = {};
+    students.forEach(s => {
+      studentMap[s._id.toString()] = s;
+    });
+
+    // Prepare bulk operations
+    const bulkOps = records.map(record => {
+      const stuDetails = studentMap[record.studentId.toString()] || {};
+      return {
+        updateOne: {
+          filter: { session: session._id, student: record.studentId },
+          update: {
+            $set: {
+              session: session._id,
+              student: record.studentId,
+              subject: subjectId,
+              date: new Date(date),
+              period: period || 'H1',
+              status: record.status,
+              remarks: record.remarks || '',
+              markedBy: 'Admin',
+              entryType: 'Manual',
+              updatedBy: req.user.id,
+              markedAt: new Date(),
+              faculty: session.faculty,
+              department: stuDetails.department || session.department,
+              year: stuDetails.year || session.year,
+              semester: stuDetails.semester || session.semester,
+              section: stuDetails.section || session.section
+            }
+          },
+          upsert: true
+        }
+      };
+    });
 
     await Attendance.bulkWrite(bulkOps);
 
@@ -1468,7 +1486,9 @@ exports.getStudentsAcademic = async (req, res) => {
           present: { $sum: { $cond: [{ $eq: ['$status', 'Present'] }, 1, 0] } },
           late: { $sum: { $cond: [{ $eq: ['$status', 'Late'] }, 1, 0] } },
           absent: { $sum: { $cond: [{ $eq: ['$status', 'Absent'] }, 1, 0] } },
-          onDuty: { $sum: { $cond: [{ $eq: ['$status', 'On-Duty'] }, 1, 0] } },
+          onDuty: { $sum: { $cond: [{ $in: ['$status', ['On-Duty', 'On Duty']] }, 1, 0] } },
+          medicalLeave: { $sum: { $cond: [{ $eq: ['$status', 'Medical Leave'] }, 1, 0] } },
+          casualLeave: { $sum: { $cond: [{ $eq: ['$status', 'Casual Leave'] }, 1, 0] } },
           total: { $sum: 1 }
         }
       },
@@ -1495,11 +1515,14 @@ exports.getStudentsAcademic = async (req, res) => {
       }
     ]);
 
+    const { getLeavePolicies, calculatePercentage } = require('../utils/attendanceCalculator');
+    const policies = await getLeavePolicies();
+
     const enrichedStudents = students.map(student => {
       const stuAtt = attendanceStats.filter(a => a._id.student.toString() === student._id.toString());
       const stuMrk = marksStats.filter(m => m._id.student.toString() === student._id.toString());
       
-      let totalPresent = 0, totalLate = 0, totalAbsent = 0, totalOnDuty = 0, totalDays = 0;
+      let totalPresent = 0, totalLate = 0, totalAbsent = 0, totalOnDuty = 0, totalMedicalLeave = 0, totalCasualLeave = 0, totalDays = 0;
       let totalInt = 0, totalExt = 0, markCount = 0;
       
       const subjectsMap = {};
@@ -1508,14 +1531,27 @@ exports.getStudentsAcademic = async (req, res) => {
         totalPresent += a.present;
         totalLate += a.late;
         totalAbsent += a.absent;
-        totalOnDuty += (a.onDuty || 0);
+        totalOnDuty += a.onDuty;
+        totalMedicalLeave += a.medicalLeave;
+        totalCasualLeave += a.casualLeave;
         totalDays += a.total;
 
         const subId = a._id.subject ? a._id.subject.toString() : 'Unknown';
         if (!subjectsMap[subId]) subjectsMap[subId] = { name: a.subjectDoc?.name || 'Unknown', code: a.subjectDoc?.code || 'Unknown' };
+        
+        const counts = {
+          Present: a.present,
+          Late: a.late,
+          Absent: a.absent,
+          'On-Duty': a.onDuty,
+          'Medical Leave': a.medicalLeave,
+          'Casual Leave': a.casualLeave
+        };
+        const subPct = calculatePercentage(counts, policies);
+
         subjectsMap[subId].attendance = {
-          present: a.present, late: a.late, absent: a.absent, onDuty: a.onDuty || 0, total: a.total,
-          percentage: a.total > 0 ? Math.round(((a.present + a.late + (a.onDuty || 0)) / a.total) * 100) : 0
+          present: a.present, late: a.late, absent: a.absent, onDuty: a.onDuty, medicalLeave: a.medicalLeave, casualLeave: a.casualLeave, total: a.total,
+          percentage: subPct
         };
       });
 
@@ -1533,7 +1569,15 @@ exports.getStudentsAcademic = async (req, res) => {
         };
       });
 
-      const attPercent = totalDays > 0 ? Math.round(((totalPresent + totalLate + totalOnDuty) / totalDays) * 100) : 0;
+      const overallCounts = {
+        Present: totalPresent,
+        Late: totalLate,
+        Absent: totalAbsent,
+        'On-Duty': totalOnDuty,
+        'Medical Leave': totalMedicalLeave,
+        'Casual Leave': totalCasualLeave
+      };
+      const attPercent = calculatePercentage(overallCounts, policies);
       
       return {
         ...student,
@@ -1843,7 +1887,7 @@ exports.handleBulkUpload = async (req, res) => {
             const sendEmail = require('../utils/mailer');
             const loginUrl = process.env.FRONTEND_URL || 'http://localhost:5173/login';
             const emailHtml = `
-              <h2>Welcome to Smart Attendance System!</h2>
+              <h2>Welcome to NITify!</h2>
               <p>Dear ${name},</p>
               <p>Your account has been created successfully.</p>
               <p><strong>Login Details:</strong></p>
@@ -1858,7 +1902,7 @@ exports.handleBulkUpload = async (req, res) => {
             `;
             await sendEmail({
                to: email,
-               subject: 'Welcome to Smart Attendance System - Login Details',
+               subject: 'Welcome to NITify - Login Details',
                html: emailHtml
             });
 
@@ -2321,11 +2365,20 @@ exports.generateReport = async (req, res) => {
     // Fetch all attendance for these students
     const attendanceRecords = await Attendance.find({ student: { $in: studentIds } }).lean();
 
+    const { getLeavePolicies, calculatePercentage } = require('../utils/attendanceCalculator');
+    const policies = await getLeavePolicies();
+
     const reportData = students.map(student => {
       const myRecords = attendanceRecords.filter(r => r.student.toString() === student._id.toString());
       const total = myRecords.length;
-      const present = myRecords.filter(r => ['Present', 'Late', 'On-Duty'].includes(r.status)).length;
-      const pct = total > 0 ? Math.round((present / total) * 100) : 0;
+      
+      const counts = { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 };
+      myRecords.forEach(r => {
+        counts[r.status] = (counts[r.status] || 0) + 1;
+      });
+
+      const pct = calculatePercentage(counts, policies);
+      const attended = (counts['Present'] || 0) + (counts['On-Duty'] || 0) + (counts['On Duty'] || 0);
 
       return {
         'Register Number': student.registerNumber || '-',
@@ -2336,7 +2389,7 @@ exports.generateReport = async (req, res) => {
         'Semester': student.semester || '-',
         'Section': student.section || '-',
         'Total Sessions': total,
-        'Sessions Attended': present,
+        'Sessions Attended': attended,
         'Attendance Percentage (%)': `${pct}%`
       };
     });
@@ -2366,15 +2419,20 @@ exports.createNotification = async (req, res) => {
     let query = { isActive: true };
 
     if (req.user.role === 'HoD') {
-      // HODs can only send notifications to their own department
-      query.department = req.user.department;
-      if (target === 'students') {
-        query.role = 'Student';
-      } else if (target === 'faculty') {
-        query.role = 'Faculty';
+      if (target === 'admins' || target === 'admin') {
+        // HODs can send notifications to admins globally
+        query.role = 'Admin';
       } else {
-        // Broad departmental scope: HOD can broadcast to staff and students in their department
-        query.role = { $in: ['Student', 'Faculty'] };
+        // HODs can only send notifications to their own department
+        query.department = req.user.department;
+        if (target === 'students') {
+          query.role = 'Student';
+        } else if (target === 'faculty') {
+          query.role = 'Faculty';
+        } else {
+          // Broad departmental scope: HOD can broadcast to staff and students in their department
+          query.role = { $in: ['Student', 'Faculty'] };
+        }
       }
     } else {
       // Admin / Principal / CoE can target overall college or specific roles
@@ -2401,7 +2459,8 @@ exports.createNotification = async (req, res) => {
 
     let targetLabel = 'overall college';
     if (req.user.role === 'HoD') {
-      if (target === 'students') targetLabel = `students in ${req.user.department} department`;
+      if (target === 'admins' || target === 'admin') targetLabel = 'administrators';
+      else if (target === 'students') targetLabel = `students in ${req.user.department} department`;
       else if (target === 'faculty') targetLabel = `faculty in ${req.user.department} department`;
       else targetLabel = `all staff & students in ${req.user.department} department`;
     } else {
@@ -2436,7 +2495,17 @@ exports.getSystemSettings = async (req, res) => {
 exports.updateSystemSettings = async (req, res) => {
   try {
     const Settings = require('../models/Settings');
-    const { automatedBackups, strictGeofencing, strictDeviceBinding, reason } = req.body;
+    const { 
+      automatedBackups, 
+      strictGeofencing, 
+      strictDeviceBinding, 
+      attendanceEditWindowHours, 
+      medicalLeavePolicy, 
+      casualLeavePolicy, 
+      attendanceThreshold, 
+      academicYear, 
+      reason 
+    } = req.body;
     let settings = await Settings.findOne();
     if (!settings) {
       settings = new Settings({});
@@ -2445,12 +2514,22 @@ exports.updateSystemSettings = async (req, res) => {
     const oldValue = {
       automatedBackups: settings.automatedBackups,
       strictGeofencing: settings.strictGeofencing,
-      strictDeviceBinding: settings.strictDeviceBinding
+      strictDeviceBinding: settings.strictDeviceBinding,
+      attendanceEditWindowHours: settings.attendanceEditWindowHours,
+      medicalLeavePolicy: settings.medicalLeavePolicy,
+      casualLeavePolicy: settings.casualLeavePolicy,
+      attendanceThreshold: settings.attendanceThreshold,
+      academicYear: settings.academicYear
     };
 
     if (automatedBackups !== undefined) settings.automatedBackups = automatedBackups;
     if (strictGeofencing !== undefined) settings.strictGeofencing = strictGeofencing;
     if (strictDeviceBinding !== undefined) settings.strictDeviceBinding = strictDeviceBinding;
+    if (attendanceEditWindowHours !== undefined) settings.attendanceEditWindowHours = Number(attendanceEditWindowHours);
+    if (medicalLeavePolicy !== undefined) settings.medicalLeavePolicy = medicalLeavePolicy;
+    if (casualLeavePolicy !== undefined) settings.casualLeavePolicy = casualLeavePolicy;
+    if (attendanceThreshold !== undefined) settings.attendanceThreshold = Number(attendanceThreshold);
+    if (academicYear !== undefined) settings.academicYear = academicYear;
     await settings.save();
 
     // Audit Log
@@ -2459,10 +2538,15 @@ exports.updateSystemSettings = async (req, res) => {
       newValue: {
         automatedBackups: settings.automatedBackups,
         strictGeofencing: settings.strictGeofencing,
-        strictDeviceBinding: settings.strictDeviceBinding
+        strictDeviceBinding: settings.strictDeviceBinding,
+        attendanceEditWindowHours: settings.attendanceEditWindowHours,
+        medicalLeavePolicy: settings.medicalLeavePolicy,
+        casualLeavePolicy: settings.casualLeavePolicy,
+        attendanceThreshold: settings.attendanceThreshold,
+        academicYear: settings.academicYear
       },
       reason: reason || 'Administrative configuration update',
-      details: 'Updated global system security and backup configurations'
+      details: 'Updated global system security, backup, and attendance configurations'
     });
 
     res.json({ message: 'Settings saved successfully', settings });
@@ -2474,6 +2558,11 @@ exports.updateSystemSettings = async (req, res) => {
 exports.getStudentAttendanceDetails = async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (req.user.role === 'Student' && String(req.user.id) !== String(id)) {
+      return res.status(403).json({ message: "Not authorized to view another student's details." });
+    }
+
     const student = await User.findById(id).select('-password').lean();
     if (!student || student.role !== 'Student') {
       return res.status(404).json({ message: 'Student not found' });
@@ -2508,6 +2597,9 @@ exports.getStudentAttendanceDetails = async (req, res) => {
       .sort({ date: -1 })
       .lean();
 
+    const { getLeavePolicies, calculatePercentage } = require('../utils/attendanceCalculator');
+    const policies = await getLeavePolicies();
+
     const subjectsMap = {};
     attendanceRecords.forEach(rec => {
       const subId = rec.subject ? rec.subject._id.toString() : 'Unknown';
@@ -2516,24 +2608,29 @@ exports.getStudentAttendanceDetails = async (req, res) => {
           name: rec.subject?.name || 'Unknown',
           code: rec.subject?.code || 'Unknown',
           faculty: rec.subject?.assignedFaculty?.map(f => f.name).join(', ') || 'N/A',
-          present: 0,
-          late: 0,
-          absent: 0,
-          onDuty: 0,
+          counts: { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 },
           total: 0
         };
       }
       subjectsMap[subId].total++;
-      if (rec.status === 'Present') subjectsMap[subId].present++;
-      else if (rec.status === 'Late') subjectsMap[subId].late++;
-      else if (rec.status === 'Absent') subjectsMap[subId].absent++;
-      else if (rec.status === 'On-Duty') subjectsMap[subId].onDuty++;
+      subjectsMap[subId].counts[rec.status] = (subjectsMap[subId].counts[rec.status] || 0) + 1;
     });
 
-    const subjectWise = Object.values(subjectsMap).map(s => ({
-      ...s,
-      percentage: s.total > 0 ? Math.round(((s.present + s.late + s.onDuty) / s.total) * 100) : 0
-    }));
+    const subjectWise = Object.values(subjectsMap).map(s => {
+      const percentage = calculatePercentage(s.counts, policies);
+      return {
+        name: s.name,
+        code: s.code,
+        faculty: s.faculty,
+        present: (s.counts['Present'] || 0) + (s.counts['On-Duty'] || 0) + (s.counts['On Duty'] || 0),
+        late: s.counts['Late'] || 0,
+        absent: s.counts['Absent'] || 0,
+        medicalLeave: s.counts['Medical Leave'] || 0,
+        casualLeave: s.counts['Casual Leave'] || 0,
+        total: s.total,
+        percentage
+      };
+    });
 
     const monthlyMap = {};
     attendanceRecords.forEach(rec => {
@@ -2541,26 +2638,37 @@ exports.getStudentAttendanceDetails = async (req, res) => {
         const dateObj = new Date(rec.date);
         const monthName = dateObj.toLocaleString('default', { month: 'short', year: 'numeric' });
         if (!monthlyMap[monthName]) {
-          monthlyMap[monthName] = { month: monthName, present: 0, total: 0 };
+          monthlyMap[monthName] = { 
+            month: monthName, 
+            counts: { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 },
+            total: 0 
+          };
         }
         monthlyMap[monthName].total++;
-        if (['Present', 'Late', 'On-Duty'].includes(rec.status)) {
-          monthlyMap[monthName].present++;
-        }
+        monthlyMap[monthName].counts[rec.status] = (monthlyMap[monthName].counts[rec.status] || 0) + 1;
       }
     });
 
-    const monthlyAttendance = Object.values(monthlyMap).map(m => ({
-      ...m,
-      percentage: m.total > 0 ? Math.round((m.present / m.total) * 100) : 0
-    }));
+    const monthlyAttendance = Object.values(monthlyMap).map(m => {
+      const percentage = calculatePercentage(m.counts, policies);
+      return {
+        month: m.month,
+        present: (m.counts['Present'] || 0) + (m.counts['On-Duty'] || 0) + (m.counts['On Duty'] || 0),
+        late: m.counts['Late'] || 0,
+        absent: m.counts['Absent'] || 0,
+        medicalLeave: m.counts['Medical Leave'] || 0,
+        casualLeave: m.counts['Casual Leave'] || 0,
+        total: m.total,
+        percentage
+      };
+    });
 
     const dateWise = attendanceRecords.map(rec => ({
       _id: rec._id,
       date: rec.date,
       subject: rec.subject?.name || 'Unknown',
       code: rec.subject?.code || 'Unknown',
-      period: rec.session?.timetable?.period || 'N/A',
+      period: rec.session?.timetable?.period || rec.period || 'N/A',
       classroom: rec.session?.timetable?.classroom || 'N/A',
       status: rec.status,
       markedBy: rec.markedBy,
@@ -2575,12 +2683,14 @@ exports.getStudentAttendanceDetails = async (req, res) => {
         if (!dailyTimelineMap[dateStr]) {
           dailyTimelineMap[dateStr] = { date: dateStr, H1: '-', H2: '-', H3: '-', H4: '-', H5: '-', H6: '-', H7: '-' };
         }
-        const p = rec.session?.timetable?.period; // e.g. "H1", "H2", etc.
+        const p = rec.session?.timetable?.period || rec.period; // e.g. "H1", "H2", etc.
         let statusChar = '-';
         if (rec.status === 'Present') statusChar = 'P';
         else if (rec.status === 'Absent') statusChar = 'A';
         else if (rec.status === 'Late') statusChar = 'L';
-        else if (rec.status === 'On-Duty') statusChar = 'OD';
+        else if (rec.status === 'On-Duty' || rec.status === 'On Duty') statusChar = 'OD';
+        else if (rec.status === 'Medical Leave') statusChar = 'ML';
+        else if (rec.status === 'Casual Leave') statusChar = 'CL';
         
         if (p && dailyTimelineMap[dateStr].hasOwnProperty(p)) {
           dailyTimelineMap[dateStr][p] = statusChar;
@@ -2597,16 +2707,12 @@ exports.getStudentAttendanceDetails = async (req, res) => {
 
     const dailyTimeline = Object.values(dailyTimelineMap).sort((a, b) => b.date.localeCompare(a.date));
 
-    let totalPresent = 0, totalLate = 0, totalAbsent = 0, totalOnDuty = 0;
+    let counts = { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 };
     attendanceRecords.forEach(rec => {
-      if (rec.status === 'Present') totalPresent++;
-      else if (rec.status === 'Late') totalLate++;
-      else if (rec.status === 'Absent') totalAbsent++;
-      else if (rec.status === 'On-Duty') totalOnDuty++;
+      counts[rec.status] = (counts[rec.status] || 0) + 1;
     });
 
-    const totalDays = attendanceRecords.length;
-    const overallPercentage = totalDays > 0 ? Math.round(((totalPresent + totalLate + totalOnDuty) / totalDays) * 100) : 0;
+    const overallPercentage = calculatePercentage(counts, policies);
 
     const AdvisorRecord = require('../models/AdvisorRecord');
     const advisorLogs = await AdvisorRecord.find({ student: id })
@@ -2617,18 +2723,21 @@ exports.getStudentAttendanceDetails = async (req, res) => {
     res.json({
       student,
       overall: {
-        present: totalPresent,
-        late: totalLate,
-        absent: totalAbsent,
-        onDuty: totalOnDuty,
-        total: totalDays,
+        present: (counts['Present'] || 0) + (counts['On-Duty'] || 0) + (counts['On Duty'] || 0),
+        late: counts['Late'] || 0,
+        absent: counts['Absent'] || 0,
+        medicalLeave: counts['Medical Leave'] || 0,
+        casualLeave: counts['Casual Leave'] || 0,
+        onDuty: (counts['On-Duty'] || 0) + (counts['On Duty'] || 0),
+        total: attendanceRecords.length,
         percentage: overallPercentage
       },
       subjectWise,
       monthly: monthlyAttendance,
       dateWise,
       dailyTimeline,
-      advisorLogs: advisorLogs || []
+      advisorLogs: advisorLogs || [],
+      policies
     });
   } catch (error) {
     console.error('getStudentAttendanceDetails error:', error);
@@ -2708,20 +2817,23 @@ exports.getAdvisorStats = async (req, res) => {
       student: { $in: studentIds }
     }).lean();
 
+    const { getLeavePolicies, calculatePercentage } = require('../utils/attendanceCalculator');
+    const policies = await getLeavePolicies();
+
     let presentCount = 0;
     const studentStatsMap = {};
     studentIds.forEach(id => {
-      studentStatsMap[id.toString()] = { present: 0, total: 0 };
+      studentStatsMap[id.toString()] = {
+        counts: { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 },
+        total: 0
+      };
     });
 
     attendanceRecords.forEach(rec => {
       const sId = rec.student.toString();
       if (studentStatsMap[sId]) {
+        studentStatsMap[sId].counts[rec.status] = (studentStatsMap[sId].counts[rec.status] || 0) + 1;
         studentStatsMap[sId].total++;
-        if (['Present', 'Late', 'On-Duty'].includes(rec.status)) {
-          studentStatsMap[sId].present++;
-          presentCount++;
-        }
       }
     });
 
@@ -2736,7 +2848,7 @@ exports.getAdvisorStats = async (req, res) => {
     students.forEach(s => {
       const sId = s._id.toString();
       const stats = studentStatsMap[sId];
-      const pct = stats.total > 0 ? Math.round((stats.present / stats.total) * 100) : 0;
+      const pct = calculatePercentage(stats.counts, policies);
 
       const studentData = {
         _id: s._id,
@@ -2749,12 +2861,12 @@ exports.getAdvisorStats = async (req, res) => {
         parentMobile: s.parentDetails?.mobile,
         attendancePercentage: pct,
         totalClasses: stats.total,
-        classesAttended: stats.present
+        classesAttended: (stats.counts['Present'] || 0) + (stats.counts['On-Duty'] || 0) + (stats.counts['On Duty'] || 0)
       };
 
-      if (pct < 75) {
+      if (pct < (policies.attendanceThreshold || 75)) {
         defaulters.push(studentData);
-      } else if (pct < 80) {
+      } else if (pct < (policies.attendanceThreshold || 75) + 5) {
         atRisk.push(studentData);
       }
     });
@@ -3170,7 +3282,8 @@ exports.getAdvisorAuditLogs = async (req, res) => {
     const Log = require('../models/Log');
     let query = {};
 
-    if (req.user.role === 'Faculty' && req.user.classAdvisorDetails?.isClassAdvisor) {
+    const isClassAdvisor = req.user.classAdvisorDetails && req.user.classAdvisorDetails.isClassAdvisor;
+    if (isClassAdvisor && req.user.role === 'Faculty') {
       const adv = req.user.classAdvisorDetails;
       query.$or = [
         { performedBy: req.user.id },
@@ -3178,6 +3291,23 @@ exports.getAdvisorAuditLogs = async (req, res) => {
           targetDept: adv.department,
           targetSemester: adv.semester,
           targetSection: adv.section
+        }
+      ];
+    } else if (req.user.role === 'Admin' || req.user.role === 'HoD') {
+      const dept = req.query.department || req.user.department;
+      const year = req.query.year;
+      const semester = req.query.semester;
+      const section = req.query.section;
+
+      if (req.user.role === 'HoD' && dept !== req.user.department) {
+        return res.status(403).json({ message: 'Access denied: HOD can only view own department logs.' });
+      }
+
+      query.$or = [
+        {
+          targetDept: dept,
+          targetSemester: semester,
+          targetSection: section
         }
       ];
     } else {
@@ -3200,11 +3330,43 @@ exports.getAdvisorAuditLogs = async (req, res) => {
 exports.getNotifications = async (req, res) => {
   try {
     const Notification = require('../models/Notification');
-    const notifications = await Notification.find({ user: req.user.id })
+    let dbNotifications = await Notification.find({ user: req.user.id })
       .sort({ createdAt: -1 })
-      .limit(50);
-    res.json(notifications);
+      .limit(50)
+      .lean();
+
+    // Dynamically inject pending attendance alerts if user is faculty
+    if (req.user.role === 'Faculty') {
+      const { computePendingList } = require('./attendanceController');
+      try {
+        const pendingList = await computePendingList(req.user.id);
+        const virtualNotifications = pendingList.map(p => {
+          const formattedDate = new Date(p.date).toLocaleDateString(undefined, { 
+            day: 'numeric', 
+            month: 'short',
+            year: 'numeric'
+          });
+          return {
+            _id: p._id ? `pending_session_${p._id}` : `pending_slot_${p.timetableId}_${new Date(p.date).getTime()}`,
+            user: req.user.id,
+            message: `Attendance Pending: ${p.class} (${p.subjectCode}) on ${formattedDate}, Period ${p.period}.`,
+            type: 'Warning',
+            read: false,
+            link: '/faculty-dashboard?tab=pending',
+            createdAt: p.date // Set createdAt to when it occurred so sorting puts it at the right chronological spot
+          };
+        });
+        dbNotifications = [...virtualNotifications, ...dbNotifications];
+        // Re-sort notifications by date descending
+        dbNotifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      } catch (err) {
+        console.error('Error injecting dynamic pending notifications:', err);
+      }
+    }
+
+    res.json(dbNotifications);
   } catch (error) {
+    console.error('getNotifications error:', error);
     res.status(500).json({ message: 'Error fetching notifications' });
   }
 };
@@ -3290,17 +3452,18 @@ exports.getFacultyAttendanceActivities = async (req, res) => {
       
       const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       const dayName = days[d.getDay()];
-      if (dayName === 'Sunday' || dayName === 'Saturday') continue; // skip weekends
+      if (dayName === 'Sunday') continue; // skip Sunday
 
       const slotsForDay = timetables.filter(t => t.dayOfWeek === dayName);
 
       for (const slot of slotsForDay) {
-        // Check if session exists for this date and timetable slot
         const sessionExists = sessions.some(s => {
           const sDateStr = new Date(s.date).toISOString().split('T')[0];
+          const sSubId = s.subject ? (s.subject._id ? s.subject._id.toString() : s.subject.toString()) : null;
+          const slotSubId = slot.subject ? (slot.subject._id ? slot.subject._id.toString() : slot.subject.toString()) : null;
           return sDateStr === dateStr && (
             (s.timetable && s.timetable.toString() === slot._id.toString()) ||
-            (s.subject.toString() === slot.subject._id.toString() && s.period === slot.period)
+            (sSubId && slotSubId && sSubId === slotSubId && s.period === slot.period)
           );
         });
 
@@ -3425,5 +3588,332 @@ exports.getFacultyAttendanceActivities = async (req, res) => {
     res.status(500).json({ message: 'Error retrieving faculty attendance details and activities.' });
   }
 };
+
+exports.getAdminAttendanceHistorySummary = async (req, res) => {
+  try {
+    const { facultyId, department } = req.query;
+
+    const Timetable = require('../models/Timetable');
+    const Session = require('../models/Session');
+    const Attendance = require('../models/Attendance');
+    const Subject = require('../models/Subject');
+    const User = require('../models/User');
+
+    let timetableQuery = {};
+    let sessionQuery = {};
+
+    const activeDept = req.user.role === 'HoD' ? req.user.department : department;
+    if (activeDept) {
+      timetableQuery.department = activeDept;
+      const subjectsInDept = await Subject.find({ department: activeDept }).select('_id');
+      const subjectIds = subjectsInDept.map(s => s._id);
+      sessionQuery.subject = { $in: subjectIds };
+    }
+
+    if (facultyId) {
+      timetableQuery.faculty = facultyId;
+      sessionQuery.faculty = facultyId;
+    }
+
+    // 1. Total Hours Assigned
+    const totalHoursAssigned = await Timetable.countDocuments(timetableQuery);
+
+    // 2. Conducted Sessions
+    const sessions = await Session.find(sessionQuery)
+      .populate('subject')
+      .populate('timetable')
+      .populate('faculty', 'name email role department')
+      .sort({ date: -1 })
+      .lean();
+
+    const totalHoursFinished = sessions.length;
+    const totalAttendanceCompleted = sessions.filter(s => s.locked).length;
+    const pendingAttendanceHours = sessions.filter(s => !s.locked).length;
+
+    // Fetch attendance records
+    const sessionIds = sessions.map(s => s._id);
+    const attendanceRecords = await Attendance.find({ session: { $in: sessionIds } }).lean();
+
+    const sessionsList = sessions.map(s => {
+      const sRecs = attendanceRecords.filter(r => r.session.toString() === s._id.toString());
+      const total = sRecs.length;
+      const present = sRecs.filter(r => ['Present', 'Late', 'On-Duty'].includes(r.status)).length;
+      
+      const dept = s.timetable?.department || s.subject?.department || 'General';
+      const yr = s.timetable?.year || '1';
+      const sec = s.timetable?.section || 'A';
+      const className = `${dept} Y${yr} Sec ${sec}`;
+
+      return {
+        _id: s._id,
+        date: s.date,
+        period: s.period,
+        subjectCode: s.subject?.code || 'N/A',
+        subjectName: s.subject?.name || 'N/A',
+        class: className,
+        facultyName: s.faculty?.name || 'Unknown',
+        locked: s.locked,
+        submissionTime: s.locked ? s.updatedAt : null,
+        totalStudents: total,
+        attendancePercentage: total > 0 ? Math.round((present / total) * 100) : 0
+      };
+    });
+
+    res.json({
+      success: true,
+      stats: {
+        totalHoursAssigned,
+        totalAttendanceCompleted,
+        totalHoursFinished,
+        pendingAttendanceHours
+      },
+      sessionsList
+    });
+  } catch (error) {
+    console.error('getAdminAttendanceHistorySummary error:', error);
+    res.status(500).json({ message: 'Error compiling attendance summary' });
+  }
+};
+
+// --- Workload Assignment Endpoints ---
+exports.getWorkloads = async (req, res) => {
+  try {
+    const Workload = require('../models/Workload');
+    const { facultyId } = req.query;
+    const query = {};
+    if (facultyId) {
+      query.faculty = facultyId;
+    }
+    const workloads = await Workload.find(query)
+      .populate('faculty', 'name email department')
+      .populate('subject', 'name code subjectType credits')
+      .sort({ createdAt: -1 });
+    res.json(workloads);
+  } catch (error) {
+    console.error('getWorkloads error:', error);
+    res.status(500).json({ message: 'Error retrieving workloads.' });
+  }
+};
+
+exports.createWorkload = async (req, res) => {
+  try {
+    const Workload = require('../models/Workload');
+    const { faculty, subject, department, year, semester, section, assignedHours } = req.body;
+    
+    // Check if duplicate exists
+    const existing = await Workload.findOne({ faculty, subject, department, year, semester, section });
+    if (existing) {
+      return res.status(400).json({ message: 'Workload assignment already exists for this faculty, subject, and class combination.' });
+    }
+
+    const workload = new Workload({
+      faculty,
+      subject,
+      department,
+      year,
+      semester,
+      section,
+      assignedHours: Number(assignedHours) || 36
+    });
+
+    await workload.save();
+    
+    const populated = await Workload.findById(workload._id)
+      .populate('faculty', 'name')
+      .populate('subject', 'name code');
+
+    // Audit log
+    const { createLog } = require('../utils/logger');
+    await createLog('Created Faculty Workload', req.user, 'Workload', workload._id, {
+      newValue: workload,
+      reason: 'Workload allocation',
+      targetDept: department,
+      targetSemester: semester,
+      targetSection: section,
+      details: `Workload of ${assignedHours} hours allocated to Faculty ${populated.faculty?.name} for ${populated.subject?.name} (${populated.subject?.code})`
+    });
+
+    res.status(201).json(populated);
+  } catch (error) {
+    console.error('createWorkload error:', error);
+    res.status(500).json({ message: 'Error creating workload assignment.' });
+  }
+};
+
+exports.updateWorkload = async (req, res) => {
+  try {
+    const Workload = require('../models/Workload');
+    const { id } = req.params;
+    const { department, year, semester, section, assignedHours, subject, faculty } = req.body;
+
+    const workload = await Workload.findById(id);
+    if (!workload) {
+      return res.status(404).json({ message: 'Workload assignment not found.' });
+    }
+
+    const oldValue = {
+      assignedHours: workload.assignedHours,
+      department: workload.department,
+      year: workload.year,
+      semester: workload.semester,
+      section: workload.section
+    };
+
+    workload.department = department || workload.department;
+    workload.year = year || workload.year;
+    workload.semester = semester || workload.semester;
+    workload.section = section || workload.section;
+    workload.assignedHours = assignedHours !== undefined ? Number(assignedHours) : workload.assignedHours;
+    if (subject) workload.subject = subject;
+    if (faculty) workload.faculty = faculty;
+
+    await workload.save();
+
+    const populated = await Workload.findById(workload._id)
+      .populate('faculty', 'name')
+      .populate('subject', 'name code');
+
+    // Audit log
+    const { createLog } = require('../utils/logger');
+    await createLog('Updated Faculty Workload', req.user, 'Workload', id, {
+      oldValue,
+      newValue: workload,
+      reason: 'Workload update',
+      targetDept: workload.department,
+      targetSemester: workload.semester,
+      targetSection: workload.section,
+      details: `Updated workload for Faculty ${populated.faculty?.name}: ${workload.assignedHours} hours`
+    });
+
+    res.json(populated);
+  } catch (error) {
+    console.error('updateWorkload error:', error);
+    res.status(500).json({ message: 'Error updating workload assignment.' });
+  }
+};
+
+exports.deleteWorkload = async (req, res) => {
+  try {
+    const Workload = require('../models/Workload');
+    const { id } = req.params;
+
+    const workload = await Workload.findById(id).populate('faculty', 'name').populate('subject', 'code');
+    if (!workload) {
+      return res.status(404).json({ message: 'Workload assignment not found.' });
+    }
+
+    await Workload.findByIdAndDelete(id);
+
+    // Audit log
+    const { createLog } = require('../utils/logger');
+    await createLog('Deleted Faculty Workload', req.user, 'Workload', id, {
+      oldValue: workload,
+      reason: 'Workload deletion',
+      targetDept: workload.department,
+      targetSemester: workload.semester,
+      targetSection: workload.section,
+      details: `Removed workload allocation for Faculty ${workload.faculty?.name} on ${workload.subject?.code}`
+    });
+
+    res.json({ message: 'Workload assignment deleted successfully.' });
+  } catch (error) {
+    console.error('deleteWorkload error:', error);
+    res.status(500).json({ message: 'Error deleting workload assignment.' });
+  }
+};
+
+exports.bulkDeleteSubjects = async (req, res) => {
+  try {
+    const { ids, reason } = req.body || {};
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No subject IDs provided for deletion.' });
+    }
+
+    if (req.user.role === 'HoD') {
+      const subjects = await Subject.find({ _id: { $in: ids } });
+      const forbidden = subjects.some(s => s.department !== req.user.department);
+      if (forbidden) {
+        return res.status(403).json({ message: 'Not authorized: You can only delete subjects of your own department.' });
+      }
+    }
+
+    const deleteResult = await Subject.deleteMany({ _id: { $in: ids } });
+
+    await createLog('Bulk Deleted Subjects', req.user, 'Subject', null, {
+      details: `Bulk deleted ${deleteResult.deletedCount} subjects.`,
+      reason: reason || 'Bulk curriculum cleanup',
+      deletedCount: deleteResult.deletedCount,
+      ids
+    });
+
+    if (req.user.role === 'HoD') {
+      await notifyAdmins(`HOD ${req.user.name} (${req.user.department}) bulk deleted ${deleteResult.deletedCount} subjects`, 'Warning');
+    }
+
+    res.json({ message: 'Subjects bulk deleted successfully', deletedCount: deleteResult.deletedCount });
+  } catch (error) {
+    console.error('Error bulk deleting subjects:', error);
+    res.status(500).json({ message: 'Error bulk deleting subjects' });
+  }
+};
+
+exports.bulkDeleteTimetable = async (req, res) => {
+  try {
+    const { ids, reason } = req.body || {};
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No timetable slot IDs provided for deletion.' });
+    }
+
+    if (req.user.role === 'HoD') {
+      const slots = await Timetable.find({ _id: { $in: ids } });
+      const forbidden = slots.some(s => s.department !== req.user.department);
+      if (forbidden) {
+        return res.status(403).json({ message: 'Not authorized: You can only delete timetable slots of your own department.' });
+      }
+    }
+
+    const deleteResult = await Timetable.deleteMany({ _id: { $in: ids } });
+
+    await createLog('Bulk Deleted Timetable Slots', req.user, 'Timetable', null, {
+      details: `Bulk deleted ${deleteResult.deletedCount} timetable slots.`,
+      reason: reason || 'Bulk timetable cleanup',
+      deletedCount: deleteResult.deletedCount,
+      ids
+    });
+
+    if (req.user.role === 'HoD') {
+      await notifyAdmins(`HOD ${req.user.name} (${req.user.department}) bulk deleted ${deleteResult.deletedCount} timetable slots`, 'Warning');
+    }
+
+    res.json({ message: 'Timetable slots bulk deleted successfully', deletedCount: deleteResult.deletedCount });
+  } catch (error) {
+    console.error('Error bulk deleting timetable slots:', error);
+    res.status(500).json({ message: 'Error bulk deleting timetable slots' });
+  }
+};
+
+exports.bulkDeleteCalendarEvents = async (req, res) => {
+  try {
+    const { ids, reason } = req.body || {};
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'No calendar event IDs provided for deletion.' });
+    }
+
+    const deleteResult = await AcademicCalendar.deleteMany({ _id: { $in: ids } });
+
+    await createLog('Bulk Deleted Calendar Events', req.user, 'AcademicCalendar', null, {
+      details: `Bulk deleted ${deleteResult.deletedCount} calendar events.`,
+      reason: reason || 'Bulk calendar cleanup',
+      deletedCount: deleteResult.deletedCount,
+      ids
+    });
+
+    res.json({ message: 'Calendar events bulk deleted successfully', deletedCount: deleteResult.deletedCount });
+  } catch (error) {
+    console.error('Error bulk deleting calendar events:', error);
+    res.status(500).json({ message: 'Error bulk deleting calendar events' });
+  }
+};
+
 
 

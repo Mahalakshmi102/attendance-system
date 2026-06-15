@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getCalendar, addCalendarEvent, updateCalendarEvent, deleteCalendarEvent } from '../../api/adminApi';
+import { getCalendar, addCalendarEvent, updateCalendarEvent, deleteCalendarEvent, bulkDeleteCalendarEvents } from '../../api/adminApi';
 import Tesseract from 'tesseract.js';
 import BulkUpload from './BulkUpload';
 import { Upload, X, Loader2, FileImage } from 'lucide-react';
@@ -7,12 +7,18 @@ import { Upload, X, Loader2, FileImage } from 'lucide-react';
 export default function CalendarManage() {
   const [events, setEvents] = useState([]);
   const [form, setForm] = useState({ date: '', type: 'Working Day', description: '', term: '' });
+  const [editingId, setEditingId] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importMessage, setImportMessage] = useState('');
+  const [selectedIds, setSelectedIds] = useState([]);
 
   useEffect(() => {
     fetchEvents();
   }, []);
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [events]);
 
   const fetchEvents = async () => {
     try {
@@ -26,30 +32,29 @@ export default function CalendarManage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await addCalendarEvent(form);
+      if (editingId) {
+        await updateCalendarEvent(editingId, form);
+        setEditingId(null);
+      } else {
+        await addCalendarEvent(form);
+      }
       setForm({ date: '', type: 'Working Day', description: '', term: '' });
       fetchEvents();
     } catch (err) {
-      alert('Error adding calendar event');
+      alert(editingId ? 'Error updating calendar event' : 'Error adding calendar event');
     }
   };
 
-  const handleEdit = async (event) => {
-    const dateDefault = new Date(event.date).toISOString().split('T')[0];
-    const date = prompt('Date (YYYY-MM-DD)', dateDefault);
-    if (!date) return;
-    const type = prompt('Type (Working Day/Holiday/Exam)', event.type);
-    if (!type) return;
-    const description = prompt('Description', event.description);
-    if (!description) return;
-    const term = prompt('Term (optional)', event.term || '');
-
-    try {
-      await updateCalendarEvent(event._id, { date, type, description, term });
-      fetchEvents();
-    } catch (err) {
-      alert(err.response?.data?.message || 'Error updating calendar event');
-    }
+  const handleEdit = (event) => {
+    setEditingId(event._id);
+    const dateDefault = event.date ? new Date(event.date).toISOString().split('T')[0] : '';
+    setForm({
+      date: dateDefault,
+      type: event.type || 'Working Day',
+      description: event.description || '',
+      term: event.term || ''
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDelete = async (event) => {
@@ -59,6 +64,34 @@ export default function CalendarManage() {
       fetchEvents();
     } catch (err) {
       alert(err.response?.data?.message || 'Error deleting calendar event');
+    }
+  };
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedIds(events.map(ev => ev._id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const handleSelectRow = (id) => {
+    setSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Are you sure you want to permanently delete the ${selectedIds.length} selected calendar events?`)) return;
+
+    try {
+      await bulkDeleteCalendarEvents(selectedIds);
+      alert('Selected calendar events deleted successfully!');
+      setSelectedIds([]);
+      fetchEvents();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error deleting selected events');
     }
   };
 
@@ -120,7 +153,23 @@ export default function CalendarManage() {
           <option>Exam</option>
         </select>
         <input required placeholder="Description (e.g., Diwali, Midterms)" value={form.description} onChange={e => setForm({...form, description: e.target.value})} className="border p-2 rounded md:col-span-2" />
-        <button type="submit" className="bg-orange-600 text-white p-2 rounded md:col-span-4 hover:bg-orange-700 transition font-medium">Add Event</button>
+        <div className="md:col-span-4 flex gap-2">
+          <button type="submit" className="flex-grow bg-orange-600 text-white p-2 rounded hover:bg-orange-700 transition font-medium">
+            {editingId ? 'Update Event' : 'Add Event'}
+          </button>
+          {editingId && (
+            <button 
+              type="button" 
+              onClick={() => {
+                setEditingId(null);
+                setForm({ date: '', type: 'Working Day', description: '', term: '' });
+              }} 
+              className="bg-slate-200 text-slate-700 p-2 rounded hover:bg-slate-350 transition font-medium px-6"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       </form>
 
       <div className="bg-white p-4 md:p-6 rounded-2xl shadow-[0_4px_24px_-4px_rgba(0,0,0,0.05)] border border-slate-100 mb-8">
@@ -175,10 +224,30 @@ export default function CalendarManage() {
         )}
       </div>
 
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-xl font-bold text-slate-800">Calendar Events</h3>
+        {selectedIds.length > 0 && (
+          <button 
+            onClick={handleDeleteSelected}
+            className="bg-red-650 hover:bg-red-755 text-white font-bold px-4 py-2 rounded-lg transition text-xs shadow-md"
+          >
+            Delete Selected ({selectedIds.length})
+          </button>
+        )}
+      </div>
+
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
         <table className="w-full text-left">
           <thead className="bg-gray-50 border-b">
             <tr>
+              <th className="p-4 text-center w-12">
+                <input 
+                  type="checkbox" 
+                  onChange={handleSelectAll} 
+                  checked={events.length > 0 && events.every(ev => selectedIds.includes(ev._id))}
+                  className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                />
+              </th>
               <th className="p-4">Date</th>
               <th className="p-4">Type</th>
               <th className="p-4">Description</th>
@@ -188,6 +257,14 @@ export default function CalendarManage() {
           <tbody>
             {events.map(ev => (
               <tr key={ev._id} className="border-b">
+                <td className="p-4 text-center w-12">
+                  <input 
+                    type="checkbox" 
+                    checked={selectedIds.includes(ev._id)} 
+                    onChange={() => handleSelectRow(ev._id)}
+                    className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                  />
+                </td>
                 <td className="p-4 font-mono">{new Date(ev.date).toLocaleDateString()}</td>
                 <td className="p-4">
                   <span className={`px-2 py-1 rounded text-sm ${

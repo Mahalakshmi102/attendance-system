@@ -4,10 +4,10 @@ const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
 
 const { 
-  getSubjects, addSubject, updateSubject, deleteSubject,
-  getUsers, addUser, updateUser, deleteUser,
-  getTimetable, addTimetable, updateTimetable, deleteTimetable,
-  getCalendar, addCalendarEvent, updateCalendarEvent, deleteCalendarEvent,
+  getSubjects, addSubject, updateSubject, deleteSubject, bulkDeleteSubjects,
+  getUsers, addUser, updateUser, deleteUser, bulkDeleteUsers,
+  getTimetable, addTimetable, updateTimetable, deleteTimetable, bulkDeleteTimetable,
+  getCalendar, addCalendarEvent, updateCalendarEvent, deleteCalendarEvent, bulkDeleteCalendarEvents,
   getAnalyticsOverview,
   getStudentsAcademic,
   getStudentAttendanceDetails,
@@ -30,7 +30,12 @@ const {
   getNotifications,
   markNotificationRead,
   markAllNotificationsRead,
-  getFacultyAttendanceActivities
+  getFacultyAttendanceActivities,
+  getAdminAttendanceHistorySummary,
+  getWorkloads,
+  createWorkload,
+  updateWorkload,
+  deleteWorkload
 } = require('../controllers/adminController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
@@ -45,24 +50,27 @@ const authAllStaff = authorize('Admin', 'Principal', 'CoE', 'HoD', 'Faculty');
 router.route('/subjects')
   .get(authAllStaff, getSubjects)
   .post(authCore, addSubject);
+router.post('/subjects/bulk-delete', authCore, bulkDeleteSubjects);
 router.route('/subjects/:id')
   .put(authCore, updateSubject)
   .delete(authCore, deleteSubject);
 
 // Users
 router.get('/students/academic', authAllStaff, getStudentsAcademic);
-router.get('/students/:id/attendance-details', authAllStaff, getStudentAttendanceDetails);
+router.get('/students/:id/attendance-details', authorize('Admin', 'Principal', 'CoE', 'HoD', 'Faculty', 'Student'), getStudentAttendanceDetails);
 router.route('/users')
   .get(authAllStaff, getUsers)
   .post(authCore, addUser);
+router.post('/users/bulk-delete', authCore, bulkDeleteUsers);
 router.route('/users/:id')
   .put(authAllStaff, updateUser)
   .delete(authCore, deleteUser);
 
 // Timetable
 router.route('/timetable')
-  .get(authAllStaff, getTimetable)
+  .get(authorize('Admin', 'Principal', 'CoE', 'HoD', 'Faculty', 'Student'), getTimetable)
   .post(authCore, addTimetable);
+router.post('/timetable/bulk-delete', authCore, bulkDeleteTimetable);
 router.route('/timetable/:id')
   .put(authCore, updateTimetable)
   .delete(authCore, deleteTimetable);
@@ -71,6 +79,7 @@ router.route('/timetable/:id')
 router.route('/calendar')
   .get(authorize('Admin', 'Principal', 'CoE', 'HoD', 'Faculty', 'Student'), getCalendar)
   .post(authCore, addCalendarEvent);
+router.post('/calendar/bulk-delete', authCore, bulkDeleteCalendarEvents);
 router.route('/calendar/:id')
   .put(authCore, updateCalendarEvent)
   .delete(authCore, deleteCalendarEvent);
@@ -81,6 +90,7 @@ router.post('/upload/:type', authCore, upload.single('file'), handleBulkUpload);
 // Analytics & Submissions
 router.get('/analytics/overview', authCore, getAnalyticsOverview);
 router.get('/analytics/attendance-monitoring', authCore, getAttendanceMonitoringData);
+router.get('/attendance/history-summary', authCore, getAdminAttendanceHistorySummary);
 router.post('/attendance/bulk', authCore, saveBulkAttendance);
 router.put('/attendance/:id', authCore, updateAttendanceRecord);
 
@@ -94,7 +104,7 @@ router.get('/faculty/:id/attendance-activities', authorize('Admin', 'Principal',
 
 // System Settings (Admin, Principal & CoE)
 router.route('/settings')
-  .get(authorize('Admin', 'Principal', 'CoE'), getSystemSettings)
+  .get(authorize('Admin', 'Principal', 'CoE', 'HoD', 'Faculty', 'Student'), getSystemSettings)
   .post(authorize('Admin', 'Principal', 'CoE'), updateSystemSettings);
 
 // --- Class Advisor Dashboard Endpoints ---
@@ -113,5 +123,13 @@ router.route('/advisor/communications')
   .post(authAllStaff, createAdvisorCommunication);
 
 router.get('/advisor/audit-logs', authAllStaff, getAdvisorAuditLogs);
+
+// Workload Management
+router.route('/workloads')
+  .get(authAllStaff, getWorkloads)
+  .post(authCore, createWorkload);
+router.route('/workloads/:id')
+  .put(authCore, updateWorkload)
+  .delete(authCore, deleteWorkload);
 
 module.exports = router;

@@ -87,6 +87,10 @@ exports.loginUser = async (req, res) => {
             name: user.name,
             email: user.email,
             role: user.role,
+            department: user.department,
+            year: user.year,
+            semester: user.semester,
+            section: user.section,
             isFirstLogin: user.isFirstLogin,
             permissions: user.permissions || [],
             classAdvisorDetails: user.classAdvisorDetails || { isClassAdvisor: false }
@@ -128,20 +132,45 @@ exports.forgotPassword = async (req, res) => {
     });
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.resetPasswordOtp = otp;
-    user.resetPasswordExpires = Date.now() + 10 * 60 * 1000; // 10 mins
-    await user.save();
+    const Request = require('../models/Request');
+    const Notification = require('../models/Notification');
 
-    const sendEmail = require('../utils/mailer');
-    await sendEmail({
-      to: user.email,
-      subject: 'Password Reset OTP',
-      html: `<p>Your password reset OTP is <strong>${otp}</strong>. It will expire in 10 minutes.</p>`
+    // Check if a pending password reset request already exists for this user
+    const existingRequest = await Request.findOne({
+      requestedBy: user._id,
+      targetModel: 'PasswordReset',
+      status: 'Pending'
+    });
+    if (existingRequest) {
+      return res.status(400).json({ message: 'A password reset request is already pending with the Admin.' });
+    }
+
+    // Create password reset request
+    const newRequest = await Request.create({
+      requestedBy: user._id,
+      targetModel: 'PasswordReset',
+      targetRecord: user._id,
+      reason: 'User clicked forgot password. Requested reset to Date of Birth.',
+      oldValue: 'Active',
+      newValue: { resetToDob: true }
     });
 
-    res.json({ message: 'OTP sent to your email address', email: user.email });
+    // Notify all Admin users
+    const admins = await User.find({ role: 'Admin' }).select('_id');
+    const notifications = admins.map(admin => ({
+      user: admin._id,
+      message: `Password reset request submitted by ${user.name} (${user.email || user.registerNumber})`,
+      type: 'Warning',
+      link: '/admin'
+    }));
+    if (notifications.length > 0) {
+      await Notification.insertMany(notifications);
+    }
+
+    res.json({ 
+      message: 'Your password reset request has been submitted to the Admin. Once approved, your password will be reset to your Date of Birth.', 
+      email: user.email 
+    });
   } catch (err) {
     console.error('Forgot password error:', err);
     res.status(500).json({ message: 'Server Error', error: err.message });
@@ -170,5 +199,16 @@ exports.resetPassword = async (req, res) => {
   } catch (err) {
     console.error('Reset password error:', err);
     res.status(500).json({ message: 'Server Error', error: err.message });
+  }
+};
+
+exports.getUserProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password').lean();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    console.error('getUserProfile error:', err);
+    res.status(500).json({ message: 'Server Error' });
   }
 };

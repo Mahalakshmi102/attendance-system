@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getTimetable, addTimetable, updateTimetable, deleteTimetable, getSubjects, getUsers } from '../../api/adminApi';
+import { getTimetable, addTimetable, updateTimetable, deleteTimetable, bulkDeleteTimetable, getSubjects, getUsers } from '../../api/adminApi';
 import BulkUpload from './BulkUpload';
 import { useAuth } from '../../context/AuthContext';
 import { Edit, Trash2, Power, PlusCircle, ChevronDown, ChevronUp, Clock, MapPin, User } from 'lucide-react';
@@ -9,12 +9,14 @@ export default function TimetableManage({ departmentOnly }) {
   const [timetable, setTimetable] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [faculty, setFaculty] = useState([]);
+  const [selectedIds, setSelectedIds] = useState([]);
   
   const [form, setForm] = useState({ 
     department: departmentOnly ? user?.department || '' : '', year: 0, semester: 0, section: '',
     dayOfWeek: 'Monday', period: 0, subject: '', faculty: '', 
     classroom: '', startTime: '', endTime: ''
   });
+  const [editingId, setEditingId] = useState(null);
 
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState(departmentOnly ? user?.department || '' : '');
@@ -36,6 +38,10 @@ export default function TimetableManage({ departmentOnly }) {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [timetable, search, deptFilter, yearFilter, semFilter, dayFilter]);
+
   const fetchData = async () => {
     try {
       const [tRes, sRes, uRes] = await Promise.all([
@@ -52,42 +58,53 @@ export default function TimetableManage({ departmentOnly }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      await addTimetable({ ...form, department: departmentOnly ? user?.department : form.department });
-      setForm({ ...form, department: departmentOnly ? user?.department || '' : '', year: 0, semester: 0, startTime: '', endTime: '', classroom: '', period: 0 });
-      fetchData();
-    } catch (err) {
-      alert(err.response?.data?.message || 'Error adding timetable entry. Possible clash detected.');
-    }
-  };
-
-  const handleEdit = async (entry) => {
-    const dayOfWeek = prompt('Day of week', entry.dayOfWeek);
-    if (!dayOfWeek) return;
-    const startTime = prompt('Start time (HH:MM)', entry.startTime);
-    if (!startTime) return;
-    const endTime = prompt('End time (HH:MM)', entry.endTime);
-    if (!endTime) return;
-    const classroom = prompt('Classroom', entry.classroom);
-    if (!classroom) return;
-    
-    try {
-      await updateTimetable(entry._id, {
-        dayOfWeek,
-        startTime,
-        endTime,
-        classroom,
-        department: entry.department,
-        year: entry.year,
-        semester: entry.semester,
-        section: entry.section,
-        period: entry.period,
-        subject: entry.subject?._id || entry.subject,
-        faculty: entry.faculty?._id || entry.faculty
+      const payload = {
+        ...form,
+        department: departmentOnly ? user?.department : form.department,
+        subject: form.subject,
+        faculty: form.faculty
+      };
+      if (editingId) {
+        await updateTimetable(editingId, payload);
+        setEditingId(null);
+      } else {
+        await addTimetable(payload);
+      }
+      setForm({ 
+        department: departmentOnly ? user?.department || '' : '', 
+        year: 0, 
+        semester: 0, 
+        section: '',
+        dayOfWeek: 'Monday', 
+        period: 0, 
+        subject: '', 
+        faculty: '', 
+        classroom: '', 
+        startTime: '', 
+        endTime: '' 
       });
       fetchData();
     } catch (err) {
-      alert(err.response?.data?.message || 'Error updating timetable entry');
+      alert(err.response?.data?.message || (editingId ? 'Error updating timetable entry' : 'Error adding timetable entry. Possible clash detected.'));
     }
+  };
+
+  const handleEdit = (entry) => {
+    setEditingId(entry._id);
+    setForm({
+      department: entry.department || '',
+      year: entry.year || 0,
+      semester: entry.semester || 0,
+      section: entry.section || '',
+      dayOfWeek: entry.dayOfWeek || 'Monday',
+      period: entry.period || 0,
+      subject: entry.subject?._id || entry.subject || '',
+      faculty: entry.faculty?._id || entry.faculty || '',
+      classroom: entry.classroom || '',
+      startTime: entry.startTime || '',
+      endTime: entry.endTime || ''
+    });
+    document.getElementById('timetable-form')?.scrollIntoView({ behavior: 'smooth' });
   };
 
   const handleDelete = async (entry) => {
@@ -106,6 +123,34 @@ export default function TimetableManage({ departmentOnly }) {
       fetchData();
     } catch (err) {
       alert('Error updating status');
+    }
+  };
+
+  const handleSelectRow = (id) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Are you sure you want to permanently delete all ${selectedIds.length} selected timetable slots?`)) return;
+    const secondConfirm = window.confirm(`This action is permanent and cannot be undone.\n\nAre you absolutely sure?`);
+    if (!secondConfirm) return;
+
+    const confirmationText = window.prompt(`To proceed, please type "DELETE" below to confirm bulk deletion:`);
+    if (confirmationText !== 'DELETE') {
+      alert('Bulk deletion cancelled: Confirmation text did not match "DELETE".');
+      return;
+    }
+
+    try {
+      await bulkDeleteTimetable(selectedIds);
+      alert(`Successfully deleted ${selectedIds.length} timetable entries.`);
+      setSelectedIds([]);
+      fetchData();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Error performing bulk deletion.');
     }
   };
 
@@ -137,15 +182,12 @@ export default function TimetableManage({ departmentOnly }) {
   });
 
   const getUniquePeriodsForClass = (classEntries) => {
-    const periodSet = new Set();
+    const periodSet = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7']);
     classEntries.forEach(entry => {
       if (entry.period) {
         periodSet.add(entry.period);
       }
     });
-    if (periodSet.size === 0) {
-      return ['H1', 'H2', 'H3', 'H4', 'H5'];
-    }
     return Array.from(periodSet).sort((a, b) => {
       const aNum = parseInt(a.replace(/\D/g, ''), 10);
       const bNum = parseInt(b.replace(/\D/g, ''), 10);
@@ -167,6 +209,7 @@ export default function TimetableManage({ departmentOnly }) {
     const reference = classEntries[0];
     if (!reference) return;
 
+    setEditingId(null);
     setForm({
       ...form,
       department: reference.department,
@@ -218,7 +261,35 @@ export default function TimetableManage({ departmentOnly }) {
         </select>
         <input required placeholder="Classroom / Lab" value={form.classroom} onChange={e => setForm({...form, classroom: e.target.value})} className="border p-2 rounded" />
         
-        <button type="submit" className="bg-indigo-600 text-white p-2 rounded md:col-span-4 hover:bg-indigo-700 transition font-bold shadow-sm">Add Timetable Entry</button>
+        <div className="md:col-span-4 flex gap-2">
+          <button type="submit" className="flex-grow bg-indigo-600 text-white p-2 rounded hover:bg-indigo-700 transition font-bold shadow-sm">
+            {editingId ? 'Update Timetable Entry' : 'Add Timetable Entry'}
+          </button>
+          {editingId && (
+            <button 
+              type="button" 
+              onClick={() => {
+                setEditingId(null);
+                setForm({
+                  department: departmentOnly ? user?.department || '' : '',
+                  year: 0,
+                  semester: 0,
+                  section: '',
+                  dayOfWeek: 'Monday',
+                  period: 0,
+                  subject: '',
+                  faculty: '',
+                  classroom: '',
+                  startTime: '',
+                  endTime: ''
+                });
+              }} 
+              className="bg-slate-200 text-slate-700 p-2 rounded hover:bg-slate-300 transition font-bold px-6"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       </form>
 
       {/* Filters */}
@@ -243,6 +314,35 @@ export default function TimetableManage({ departmentOnly }) {
             {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map(d => <option key={d} value={d}>{d}</option>)}
          </select>
       </div>
+
+      {(filteredTimetable.length > 0 || selectedIds.length > 0) && (
+        <div className="flex flex-wrap justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-100 mb-6 gap-4">
+          <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+            <input 
+              type="checkbox"
+              checked={filteredTimetable.length > 0 && filteredTimetable.every(slot => selectedIds.includes(slot._id))}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setSelectedIds(filteredTimetable.map(slot => slot._id));
+                } else {
+                  setSelectedIds([]);
+                }
+              }}
+              className="w-4 h-4 text-indigo-650 border-slate-200 rounded focus:ring-indigo-500 cursor-pointer"
+            />
+            Select All Filtered Slots ({filteredTimetable.length})
+          </label>
+
+          {selectedIds.length > 0 && (
+            <button 
+              onClick={handleDeleteSelected}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition shadow-sm"
+            >
+              Delete Selected Slots ({selectedIds.length})
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="space-y-4">
         {Object.keys(groupedClasses).map((classKey) => {
@@ -310,6 +410,13 @@ export default function TimetableManage({ departmentOnly }) {
                                       ? 'bg-indigo-50/30 border-indigo-100/70 hover:border-indigo-300 hover:shadow-sm'
                                       : 'bg-slate-50 border-slate-200 opacity-70'
                                   }`}>
+                                    <input 
+                                      type="checkbox"
+                                      checked={selectedIds.includes(slot._id)}
+                                      onChange={() => handleSelectRow(slot._id)}
+                                      className="absolute top-2.5 right-2.5 w-4 h-4 text-indigo-655 border-slate-200 rounded focus:ring-indigo-500 cursor-pointer z-10"
+                                      title="Select slot"
+                                    />
                                     <div>
                                       {/* Subject */}
                                       <span className="block font-black text-indigo-900 text-xs tracking-wide">

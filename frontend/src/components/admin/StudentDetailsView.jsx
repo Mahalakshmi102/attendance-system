@@ -1,14 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { apiUrl, withAuthHeader } from '../../api/http';
+import { useAuth } from '../../context/AuthContext';
 import { 
-  ArrowLeft, Calendar, Clock, CheckCircle2, XCircle, AlertCircle, Printer, Loader2 
+  ArrowLeft, Calendar, Clock, CheckCircle2, XCircle, AlertCircle, Printer, Loader2, Percent 
 } from 'lucide-react';
 import { 
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend 
 } from 'recharts';
 
 export default function StudentDetailsView({ studentId, onBack }) {
+  const { user: currentUser } = useAuth();
+  const isStudent = currentUser?.role === 'Student';
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [rawData, setRawData] = useState(null);
@@ -105,14 +109,20 @@ export default function StudentDetailsView({ studentId, onBack }) {
         <AlertCircle className="w-12 h-12 text-rose-500 mx-auto mb-4" />
         <h3 className="text-lg font-bold text-rose-800 mb-2">Error Loading Profile</h3>
         <p className="text-rose-600 font-medium mb-6">{error || 'Could not retrieve data.'}</p>
-        <button onClick={onBack} className="px-6 py-2.5 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-700 transition">
-          Go Back
-        </button>
+        {onBack && !isStudent ? (
+          <button onClick={onBack} className="px-6 py-2.5 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-700 transition">
+            Go Back
+          </button>
+        ) : (
+          <button onClick={fetchAttendanceDetails} className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-500 transition">
+            Retry
+          </button>
+        )}
       </div>
     );
   }
 
-  const { student, dateWise, dailyTimeline, subjectWise } = rawData;
+  const { student, dateWise, dailyTimeline, subjectWise, overall } = rawData;
 
   // 1. Semester Options
   const semesters = ['All Semesters', ...Array.from(new Set(
@@ -149,34 +159,90 @@ export default function StudentDetailsView({ studentId, onBack }) {
     return true;
   });
 
+  const policies = rawData?.policies || { medicalLeavePolicy: 'Exclude', casualLeavePolicy: 'Count as Absent' };
+
   // Re-calculate statistics based on filters
   let filteredPresent = 0;
   let filteredLate = 0;
   let filteredAbsent = 0;
   let filteredOnDuty = 0;
+  let filteredMedicalLeave = 0;
+  let filteredCasualLeave = 0;
+
   filteredDateWise.forEach(r => {
     if (r.status === 'Present') filteredPresent++;
     else if (r.status === 'Late') filteredLate++;
     else if (r.status === 'Absent') filteredAbsent++;
-    else if (r.status === 'On-Duty') filteredOnDuty++;
+    else if (r.status === 'On-Duty' || r.status === 'On Duty') filteredOnDuty++;
+    else if (r.status === 'Medical Leave') filteredMedicalLeave++;
+    else if (r.status === 'Casual Leave') filteredCasualLeave++;
   });
 
-  const filteredTotal = filteredPresent + filteredLate + filteredAbsent + filteredOnDuty;
-  const filteredPct = filteredTotal > 0 ? Math.round(((filteredPresent + filteredLate + filteredOnDuty) / filteredTotal) * 100) : 0;
+  let attended = filteredPresent + filteredLate + filteredOnDuty;
+  let conducted = filteredPresent + filteredLate + filteredOnDuty + filteredAbsent;
+
+  if (policies.medicalLeavePolicy === 'Count as Present') {
+    attended += filteredMedicalLeave;
+    conducted += filteredMedicalLeave;
+  } else if (policies.medicalLeavePolicy === 'Count as Absent') {
+    conducted += filteredMedicalLeave;
+  } // Exclude doesn't add to attended or conducted
+
+  if (policies.casualLeavePolicy === 'Count as Present') {
+    attended += filteredCasualLeave;
+    conducted += filteredCasualLeave;
+  } else if (policies.casualLeavePolicy === 'Count as Absent') {
+    conducted += filteredCasualLeave;
+  } // Exclude doesn't add to attended or conducted
+
+  const filteredTotal = conducted;
+  const filteredPct = conducted > 0 ? Math.round((attended / conducted) * 100) : 0;
 
   // Filter subject-wise data
   const filteredSubjectWise = (subjectWise || []).map(sub => {
     // Filter records for this subject
     const recordsForSub = filteredDateWise.filter(r => r.code === sub.code);
-    const subTotal = recordsForSub.length;
-    const subPresent = recordsForSub.filter(r => ['Present', 'Late', 'On-Duty'].includes(r.status)).length;
-    const subAbsent = subTotal - subPresent;
-    const subPct = subTotal > 0 ? Math.round((subPresent / subTotal) * 100) : 0;
+    
+    let subPresent = 0;
+    let subLate = 0;
+    let subAbsent = 0;
+    let subOnDuty = 0;
+    let subMedicalLeave = 0;
+    let subCasualLeave = 0;
+
+    recordsForSub.forEach(r => {
+      if (r.status === 'Present') subPresent++;
+      else if (r.status === 'Late') subLate++;
+      else if (r.status === 'Absent') subAbsent++;
+      else if (r.status === 'On-Duty' || r.status === 'On Duty') subOnDuty++;
+      else if (r.status === 'Medical Leave') subMedicalLeave++;
+      else if (r.status === 'Casual Leave') subCasualLeave++;
+    });
+
+    let subAttended = subPresent + subLate + subOnDuty;
+    let subConducted = subPresent + subLate + subOnDuty + subAbsent;
+
+    if (policies.medicalLeavePolicy === 'Count as Present') {
+      subAttended += subMedicalLeave;
+      subConducted += subMedicalLeave;
+    } else if (policies.medicalLeavePolicy === 'Count as Absent') {
+      subConducted += subMedicalLeave;
+    }
+
+    if (policies.casualLeavePolicy === 'Count as Present') {
+      subAttended += subCasualLeave;
+      subConducted += subCasualLeave;
+    } else if (policies.casualLeavePolicy === 'Count as Absent') {
+      subConducted += subCasualLeave;
+    }
+
+    const subPct = subConducted > 0 ? Math.round((subAttended / subConducted) * 100) : 0;
+
     return {
       ...sub,
-      total: subTotal,
-      present: subPresent,
-      absent: subAbsent,
+      total: subConducted,
+      present: subAttended,
+      absent: subConducted - subAttended,
       percentage: subPct
     };
   }).filter(sub => {
@@ -309,12 +375,16 @@ export default function StudentDetailsView({ studentId, onBack }) {
 
       {/* Top Breadcrumb & Action Row */}
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 no-print">
-        <button 
-          onClick={onBack}
-          className="flex items-center gap-2 self-start px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-xl border border-slate-200 shadow-sm transition"
-        >
-          <ArrowLeft className="w-4 h-4 text-slate-500" /> Back to Student List
-        </button>
+        {onBack && !isStudent ? (
+          <button 
+            onClick={onBack}
+            className="flex items-center gap-2 self-start px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-xl border border-slate-200 shadow-sm transition"
+          >
+            <ArrowLeft className="w-4 h-4 text-slate-500" /> Back to Student List
+          </button>
+        ) : (
+          <div />
+        )}
 
         <div className="flex items-center gap-4">
           <div className="text-right">
@@ -340,7 +410,7 @@ export default function StudentDetailsView({ studentId, onBack }) {
             </div>
             <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{student.name}</h2>
             <p className="text-sm font-semibold text-slate-300 mt-1">
-              Roll No: {student.rollNumber || 'N/A'} | Reg No: {student.registerNumber || '-'} | {student.department} Department {student.batch ? `| Batch: ${student.batch}` : ''}
+              Roll No: {student.rollNumber || 'N/A'} | Reg No: {student.registerNumber || '-'} | {student.department || 'N/A'} Department {student.batch ? `| Batch: ${student.batch}` : ''}
             </p>
           </div>
           <div className="flex flex-wrap gap-3 no-print">
@@ -423,7 +493,7 @@ export default function StudentDetailsView({ studentId, onBack }) {
           <div>
             <h4 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Present</h4>
             <div className="flex items-baseline gap-1 mt-0.5">
-              <span className="text-2xl font-black text-slate-800">{filteredPresent + filteredLate + filteredOnDuty}</span>
+              <span className="text-2xl font-black text-slate-800">{attended}</span>
               <span className="text-xs font-bold text-emerald-600">({filteredPct}%)</span>
             </div>
             <p className="text-[10px] font-bold text-slate-500 mt-0.5">Active Presence</p>
@@ -438,24 +508,24 @@ export default function StudentDetailsView({ studentId, onBack }) {
           <div>
             <h4 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Absent</h4>
             <div className="flex items-baseline gap-1 mt-0.5">
-              <span className="text-2xl font-black text-slate-800">{filteredAbsent}</span>
-              <span className="text-xs font-bold text-rose-600">({filteredTotal > 0 ? 100 - filteredPct : 0}%)</span>
+              <span className="text-2xl font-black text-slate-800">{conducted - attended}</span>
+              <span className="text-xs font-bold text-rose-600">({conducted > 0 ? 100 - filteredPct : 0}%)</span>
             </div>
             <p className="text-[10px] font-bold text-slate-500 mt-0.5">Absent periods</p>
           </div>
         </div>
 
-        {/* Card 4: HDL Applied % */}
+        {/* Card 4: Overall Attendance % */}
         <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.04)] flex items-center gap-4 print-card">
-          <div className="bg-amber-50 p-3.5 rounded-2xl text-amber-600">
-            <AlertCircle className="w-6 h-6" />
+          <div className="bg-indigo-50 p-3.5 rounded-2xl text-indigo-600">
+            <Percent className="w-6 h-6" />
           </div>
           <div>
-            <h4 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">HDL Applied %</h4>
+            <h4 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Overall Attendance %</h4>
             <div className="flex items-baseline gap-1 mt-0.5">
-              <span className="text-2xl font-black text-slate-800">{filteredPct}%</span>
+              <span className="text-2xl font-black text-slate-800">{overall?.percentage ?? 0}%</span>
             </div>
-            <p className="text-[10px] font-bold text-slate-500 mt-0.5 font-sans">Half Day Leave Rule</p>
+            <p className="text-[10px] font-bold text-slate-500 mt-0.5 font-sans">Cumulative Attendance</p>
           </div>
         </div>
 
@@ -470,7 +540,7 @@ export default function StudentDetailsView({ studentId, onBack }) {
               {/* Approximating days absent by dividing absent periods by 7 (or show overall absent count) */}
               <span className="text-2xl font-black text-slate-800">{Math.ceil(filteredAbsent / 7)}</span>
             </div>
-            <p className="text-[10px] font-bold text-slate-500 mt-0.5">After HDLRA</p>
+            <p className="text-[10px] font-bold text-slate-500 mt-0.5">Estimated Days</p>
           </div>
         </div>
       </div>
@@ -487,9 +557,11 @@ export default function StudentDetailsView({ studentId, onBack }) {
           <div className="flex flex-wrap gap-2 text-[10px] font-black tracking-wide">
             <span className="px-2.5 py-1 bg-emerald-500 text-white rounded shadow-sm">PRESENT</span>
             <span className="px-2.5 py-1 bg-rose-500 text-white rounded shadow-sm">ABSENT</span>
-            <span className="px-2.5 py-1 bg-amber-500 text-white rounded shadow-sm">NOT ENTERED</span>
+            <span className="px-2.5 py-1 bg-indigo-600 text-white rounded shadow-sm">ON DUTY</span>
+            <span className="px-2.5 py-1 bg-teal-500 text-white rounded shadow-sm">MEDICAL LEAVE</span>
+            <span className="px-2.5 py-1 bg-blue-500 text-white rounded shadow-sm">CASUAL LEAVE</span>
+            <span className="px-2.5 py-1 bg-amber-500 text-white rounded shadow-sm">LATE</span>
             <span className="px-2.5 py-1 bg-slate-700 text-white rounded shadow-sm">TIME TABLE NOT SET</span>
-            <span className="px-2.5 py-1 bg-indigo-600 text-white rounded shadow-sm">NO CLASS/SUSPENDED</span>
           </div>
         </div>
 
@@ -526,13 +598,17 @@ export default function StudentDetailsView({ studentId, onBack }) {
                       printClass = 'print-badge-red';
                     } else if (cell.status === 'Late') {
                       cellClass = 'bg-amber-500 text-white shadow-sm';
-                    } else if (cell.status === 'On-Duty') {
+                    } else if (cell.status === 'On-Duty' || cell.status === 'On Duty') {
                       cellClass = 'bg-indigo-600 text-white shadow-sm';
+                    } else if (cell.status === 'Medical Leave') {
+                      cellClass = 'bg-teal-500 text-white shadow-sm';
+                    } else if (cell.status === 'Casual Leave') {
+                      cellClass = 'bg-blue-500 text-white shadow-sm';
                     } else if (cell.status === 'Holiday') {
                       cellClass = 'bg-purple-600 text-white shadow-sm';
                     }
 
-                    const isEditable = cell.recordId ? true : false;
+                    const isEditable = (cell.recordId && !isStudent) ? true : false;
                     return (
                       <td key={hNum} className="p-3.5 border-r border-slate-100/50 align-middle">
                         {cell.code !== '-' ? (
@@ -818,6 +894,20 @@ export default function StudentDetailsView({ studentId, onBack }) {
                     className="flex items-center justify-center gap-2 p-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md shadow-indigo-600/10 text-xs"
                   >
                     <AlertCircle className="w-4 h-4" /> On-Duty
+                  </button>
+                  <button 
+                    disabled={updatingStatus}
+                    onClick={() => handleUpdateStatus('Medical Leave')}
+                    className="flex items-center justify-center gap-2 p-3 bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md shadow-teal-500/10 text-xs col-span-2"
+                  >
+                    <Calendar className="w-4 h-4" /> Medical Leave
+                  </button>
+                  <button 
+                    disabled={updatingStatus}
+                    onClick={() => handleUpdateStatus('Casual Leave')}
+                    className="flex items-center justify-center gap-2 p-3 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md shadow-blue-500/10 text-xs col-span-2"
+                  >
+                    <Calendar className="w-4 h-4" /> Casual Leave
                   </button>
                 </div>
               </div>

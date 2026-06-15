@@ -6,6 +6,11 @@ const SettingsManage = () => {
     automatedBackups: true,
     strictGeofencing: false,
     strictDeviceBinding: true,
+    attendanceEditWindowHours: 24,
+    medicalLeavePolicy: 'Exclude',
+    casualLeavePolicy: 'Count as Absent',
+    attendanceThreshold: 75,
+    academicYear: '2025-2026',
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -22,6 +27,11 @@ const SettingsManage = () => {
           automatedBackups: res.data.automatedBackups,
           strictGeofencing: res.data.strictGeofencing,
           strictDeviceBinding: res.data.strictDeviceBinding,
+          attendanceEditWindowHours: res.data.attendanceEditWindowHours || 24,
+          medicalLeavePolicy: res.data.medicalLeavePolicy || 'Exclude',
+          casualLeavePolicy: res.data.casualLeavePolicy || 'Count as Absent',
+          attendanceThreshold: res.data.attendanceThreshold || 75,
+          academicYear: res.data.academicYear || '2025-2026',
         });
       }
     } catch (err) {
@@ -98,6 +108,86 @@ const SettingsManage = () => {
           >
             <div className={`w-4 h-4 bg-white rounded-full absolute top-1 shadow-sm transition-all ${settings.strictDeviceBinding ? 'right-1' : 'left-1'}`}></div>
           </button>
+        </div>
+
+        <div className="flex justify-between items-center border-t border-slate-100 pt-6">
+          <div>
+            <h4 className="font-bold text-slate-700">Attendance Edit Window (Hours)</h4>
+            <p className="text-sm text-slate-500 font-medium">Configure the time limit within which faculty can directly modify submitted attendance logs.</p>
+          </div>
+          <input 
+            type="number"
+            min="1"
+            max="168"
+            className="w-24 border border-slate-200 rounded-xl p-2.5 text-center font-bold text-slate-700 outline-none focus:border-indigo-500 bg-slate-50/50"
+            value={settings.attendanceEditWindowHours || 24}
+            onChange={e => setSettings(prev => ({ ...prev, attendanceEditWindowHours: Math.max(1, Number(e.target.value)) }))}
+            disabled={saving}
+          />
+        </div>
+
+        <div className="flex justify-between items-center border-t border-slate-100 pt-6">
+          <div>
+            <h4 className="font-bold text-slate-700">Medical Leave (ML) Policy</h4>
+            <p className="text-sm text-slate-500 font-medium">Define how approved Medical Leave entries affect attendance calculation.</p>
+          </div>
+          <select
+            className="w-44 border border-slate-200 rounded-xl p-2.5 font-bold text-slate-700 outline-none focus:border-indigo-500 bg-slate-50/50 text-sm"
+            value={settings.medicalLeavePolicy}
+            onChange={e => setSettings(prev => ({ ...prev, medicalLeavePolicy: e.target.value }))}
+            disabled={saving}
+          >
+            <option value="Exclude">Exclude from Calculations</option>
+            <option value="Count as Present">Count as Present</option>
+            <option value="Count as Absent">Count as Absent</option>
+          </select>
+        </div>
+
+        <div className="flex justify-between items-center border-t border-slate-100 pt-6">
+          <div>
+            <h4 className="font-bold text-slate-700">Casual Leave (CL) Policy</h4>
+            <p className="text-sm text-slate-500 font-medium">Define how approved Casual Leave entries affect attendance calculation.</p>
+          </div>
+          <select
+            className="w-44 border border-slate-200 rounded-xl p-2.5 font-bold text-slate-700 outline-none focus:border-indigo-500 bg-slate-50/50 text-sm"
+            value={settings.casualLeavePolicy}
+            onChange={e => setSettings(prev => ({ ...prev, casualLeavePolicy: e.target.value }))}
+            disabled={saving}
+          >
+            <option value="Exclude">Exclude from Calculations</option>
+            <option value="Count as Present">Count as Present</option>
+            <option value="Count as Absent">Count as Absent</option>
+          </select>
+        </div>
+
+        <div className="flex justify-between items-center border-t border-slate-100 pt-6">
+          <div>
+            <h4 className="font-bold text-slate-700">Attendance Defaulter Threshold (%)</h4>
+            <p className="text-sm text-slate-500 font-medium">Configure the minimum required attendance percentage for exam eligibility (defaulter list threshold).</p>
+          </div>
+          <input 
+            type="number"
+            min="10"
+            max="100"
+            className="w-24 border border-slate-200 rounded-xl p-2.5 text-center font-bold text-slate-700 outline-none focus:border-indigo-500 bg-slate-50/50"
+            value={settings.attendanceThreshold || 75}
+            onChange={e => setSettings(prev => ({ ...prev, attendanceThreshold: Math.max(10, Math.min(100, Number(e.target.value))) }))}
+            disabled={saving}
+          />
+        </div>
+
+        <div className="flex justify-between items-center border-t border-slate-100 pt-6">
+          <div>
+            <h4 className="font-bold text-slate-700">Current Academic Year</h4>
+            <p className="text-sm text-slate-500 font-medium">Manage the active academic calendar year for tracking reports.</p>
+          </div>
+          <input 
+            type="text"
+            className="w-44 border border-slate-200 rounded-xl p-2.5 text-center font-bold text-slate-700 outline-none focus:border-indigo-500 bg-slate-50/50 text-sm"
+            value={settings.academicYear || '2025-2026'}
+            onChange={e => setSettings(prev => ({ ...prev, academicYear: e.target.value }))}
+            disabled={saving}
+          />
         </div>
       </div>
 

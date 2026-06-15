@@ -115,15 +115,19 @@ exports.exportAttendanceSummary = async (req, res) => {
 
     const attendanceRecords = await Attendance.find({ student: { $in: studentIds } }).lean();
 
+    const { getLeavePolicies, calculatePercentage } = require('../utils/attendanceCalculator');
+    const policies = await getLeavePolicies();
+
     const summaryData = students.map(s => {
       const records = attendanceRecords.filter(r => r.student.toString() === s._id.toString());
       const total = records.length;
-      const present = records.filter(r => r.status === 'Present').length;
-      const late = records.filter(r => r.status === 'Late').length;
-      const absent = records.filter(r => r.status === 'Absent').length;
-      const onDuty = records.filter(r => r.status === 'On-Duty').length;
-      const attended = present + late + onDuty;
-      const percentage = total > 0 ? Math.round((attended / total) * 100) : 100;
+
+      const counts = { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 };
+      records.forEach(r => {
+        counts[r.status] = (counts[r.status] || 0) + 1;
+      });
+
+      const percentage = calculatePercentage(counts, policies);
 
       return {
         'Register Number': s.registerNumber || '-',
@@ -134,12 +138,14 @@ exports.exportAttendanceSummary = async (req, res) => {
         'Semester': s.semester || '-',
         'Section': s.section || 'A',
         'Total Sessions': total,
-        'Present Count': present,
-        'Late Count': late,
-        'OD Count': onDuty,
-        'Absent Count': absent,
+        'Present Count': counts['Present'] || 0,
+        'Late Count': counts['Late'] || 0,
+        'OD Count': (counts['On-Duty'] || 0) + (counts['On Duty'] || 0),
+        'Medical Leave Count': counts['Medical Leave'] || 0,
+        'Casual Leave Count': counts['Casual Leave'] || 0,
+        'Absent Count': counts['Absent'] || 0,
         'Attendance Percentage': `${percentage}%`,
-        'Status': percentage >= 75 ? 'Compliant' : 'Defaulter'
+        'Status': percentage >= (policies.attendanceThreshold || 75) ? 'Compliant' : 'Defaulter'
       };
     });
 
@@ -286,20 +292,15 @@ exports.exportDeptPerformance = async (req, res) => {
       const deptStudents = await User.find({ role: 'Student', department: dept }).select('_id');
       const studentIds = deptStudents.map(s => s._id);
       
-      const attendanceSummary = await Attendance.aggregate([
-        { $match: { student: { $in: studentIds } } },
-        {
-          $group: {
-            _id: null,
-            attended: { $sum: { $cond: [{ $in: ['$status', ['Present', 'Late', 'On-Duty']] }, 1, 0] } },
-            total: { $sum: 1 }
-          }
-        }
-      ]);
+      const attendanceSummary = await Attendance.find({ student: { $in: studentIds } }).select('status').lean();
 
       let avgAttendance = 100;
-      if (attendanceSummary.length > 0 && attendanceSummary[0].total > 0) {
-        avgAttendance = Math.round((attendanceSummary[0].attended / attendanceSummary[0].total) * 100);
+      if (attendanceSummary.length > 0) {
+        const counts = { Present: 0, Late: 0, Absent: 0, 'On-Duty': 0, 'On Duty': 0, 'Medical Leave': 0, 'Casual Leave': 0 };
+        attendanceSummary.forEach(r => {
+          counts[r.status] = (counts[r.status] || 0) + 1;
+        });
+        avgAttendance = calculatePercentage(counts, policies);
       }
 
       let rating = 'Excellent';

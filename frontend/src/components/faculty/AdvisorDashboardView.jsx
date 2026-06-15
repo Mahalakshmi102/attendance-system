@@ -13,7 +13,7 @@ import {
 import StudentDetailsView from '../admin/StudentDetailsView';
 import StudentModal from '../admin/StudentModal';
 
-export default function AdvisorDashboardView() {
+export default function AdvisorDashboardView({ faculty }) {
   const { user } = useAuth();
   const [activeSubTab, setActiveSubTab] = useState('overview');
   
@@ -74,7 +74,7 @@ export default function AdvisorDashboardView() {
 
   useEffect(() => {
     fetchStats();
-  }, []);
+  }, [faculty]);
 
   useEffect(() => {
     if (activeSubTab === 'counseling') {
@@ -92,7 +92,12 @@ export default function AdvisorDashboardView() {
     try {
       setLoading(true);
       setError('');
-      const res = await axios.get(apiUrl('/api/admin/advisor/stats'), {
+      let queryStr = '';
+      if (faculty?.classAdvisorDetails) {
+        const adv = faculty.classAdvisorDetails;
+        queryStr = `?department=${adv.department}&year=${adv.year}&semester=${adv.semester}&section=${adv.section}`;
+      }
+      const res = await axios.get(apiUrl(`/api/admin/advisor/stats${queryStr}`), {
         headers: withAuthHeader()
       });
       setStatsData(res.data);
@@ -149,7 +154,12 @@ export default function AdvisorDashboardView() {
   const fetchAuditLogs = async () => {
     try {
       setLoadingAudit(true);
-      const res = await axios.get(apiUrl('/api/admin/advisor/audit-logs'), {
+      let queryStr = '';
+      if (faculty?.classAdvisorDetails) {
+        const adv = faculty.classAdvisorDetails;
+        queryStr = `?department=${adv.department}&year=${adv.year}&semester=${adv.semester}&section=${adv.section}`;
+      }
+      const res = await axios.get(apiUrl(`/api/admin/advisor/audit-logs${queryStr}`), {
         headers: withAuthHeader()
       });
       setAuditLogs(res.data);
@@ -293,6 +303,32 @@ export default function AdvisorDashboardView() {
   }
 
   const { classDetails, statistics, defaulters, atRisk, topPerforming, pendingLeaves, attendanceTrends } = statsData;
+
+  // Filter records
+  const displayRecords = faculty 
+    ? records.filter(r => String(r.advisor?._id || r.advisor?.id || r.advisor) === String(faculty._id || faculty.id))
+    : records;
+
+  // Filter communications
+  const displayCommunications = faculty
+    ? communications.filter(c => String(c.sender?._id || c.sender?.id || c.sender) === String(faculty._id || faculty.id))
+    : communications;
+
+  // Filter requests
+  const displayRequests = faculty?.classAdvisorDetails
+    ? requests.filter(req => {
+        const reqStud = req.requestedBy || {};
+        if (String(reqStud._id || reqStud.id) === String(faculty._id || faculty.id)) {
+          return true;
+        }
+        const adv = faculty.classAdvisorDetails;
+        return reqStud.role === 'Student' &&
+          String(reqStud.department).toLowerCase() === String(adv.department).toLowerCase() &&
+          String(reqStud.year) === String(adv.year) &&
+          String(reqStud.semester) === String(adv.semester) &&
+          String(reqStud.section).toLowerCase() === String(adv.section).toLowerCase();
+      })
+    : requests;
 
   // Compile full roster list
   const fullRoster = [];
@@ -651,7 +687,7 @@ export default function AdvisorDashboardView() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {requests.map(req => {
+                    {displayRequests.map(req => {
                       const reqStud = req.requestedBy || {};
                       return (
                         <tr key={req._id} className="hover:bg-slate-50/70 transition">
@@ -704,7 +740,7 @@ export default function AdvisorDashboardView() {
                         </tr>
                       );
                     })}
-                    {requests.length === 0 && (
+                    {displayRequests.length === 0 && (
                       <tr>
                         <td colSpan="6" className="p-10 text-center text-slate-400 italic font-semibold">No pending leaves or correction requests registered for your class.</td>
                       </tr>
@@ -845,7 +881,7 @@ export default function AdvisorDashboardView() {
               {loadingComms ? (
                 <div className="flex justify-center py-20"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>
               ) : (
-                communications.map(comm => (
+                displayCommunications.map(comm => (
                   <div key={comm._id} className="p-4 bg-slate-50 border border-slate-100 rounded-xl space-y-2 text-xs hover:shadow-sm transition">
                     <div className="flex justify-between items-center">
                       <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${
@@ -874,7 +910,7 @@ export default function AdvisorDashboardView() {
                 ))
               )}
 
-              {communications.length === 0 && !loadingComms && (
+              {displayCommunications.length === 0 && !loadingComms && (
                 <div className="text-center py-32 text-slate-400 italic font-semibold">No communications dispatched yet. Use the sidebar form to broadcast announcements.</div>
               )}
             </div>
@@ -902,13 +938,13 @@ export default function AdvisorDashboardView() {
             {loadingRecords ? (
               <div className="flex items-center justify-center p-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>
             ) : (
-              records.map(record => (
+              displayRecords.map(record => (
                 <div key={record._id} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition flex flex-col md:flex-row justify-between gap-6">
                   <div className="space-y-2.5 flex-1">
                     <div className="flex flex-wrap items-center gap-2.5">
                       <span className={`px-2.5 py-0.5 rounded text-[10px] font-black uppercase ${
                         record.type === 'Counseling' ? 'bg-emerald-500 text-white' :
-                        record.type === 'ParentMeeting' ? 'bg-purple-500 text-white' :
+                        record.type === 'ParentMeeting' ? 'bg-purple-50 text-white' :
                         record.type === 'Grievance' ? 'bg-sky-500 text-white' :
                         record.type === 'Mentorship' ? 'bg-indigo-500 text-white' : 'bg-rose-500 text-white'
                       }`}>
@@ -962,7 +998,7 @@ export default function AdvisorDashboardView() {
               ))
             )}
 
-            {records.length === 0 && !loadingRecords && (
+            {displayRecords.length === 0 && !loadingRecords && (
               <div className="bg-white p-12 rounded-2xl border border-slate-100 shadow-sm text-center">
                 <AlertCircle className="w-12 h-12 text-slate-300 mx-auto mb-4" />
                 <h4 className="text-base font-bold text-slate-800">No Counseling Logs Registered</h4>

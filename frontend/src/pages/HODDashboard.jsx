@@ -58,9 +58,8 @@ function HODDashboard() {
     { id: 'timetable', label: 'Timetable Management', icon: Clock },
     { id: 'attendance', label: 'Attendance Reports', icon: CheckSquare },
     { id: 'audit', label: 'Department Audit Logs', icon: History },
-    { id: 'approvals', label: 'Pending Approvals', icon: FileCheck2 },
-    { id: 'send-notifications', label: 'Send Announcements', icon: Send },
     { id: 'notifications', label: 'Notifications', icon: Bell },
+    { id: 'send-notifications', label: 'Send Notifications', icon: Send },
   ];
 
   return (
@@ -77,14 +76,14 @@ function HODDashboard() {
       <aside className={`fixed inset-y-0 left-0 w-72 bg-white shadow-xl lg:shadow-[4px_0_24px_rgba(0,0,0,0.02)] flex flex-col z-30 transition-transform duration-300 transform lg:translate-x-0 lg:static ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <div className="p-8 flex items-center justify-between border-b border-slate-100">
+        <div className="p-6 flex items-center justify-between border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className="bg-purple-600 p-2.5 rounded-xl shadow-lg shadow-purple-200">
-              <ShieldCheck className="text-white w-7 h-7" />
+            <div className="w-10 h-10 rounded-full border border-slate-200 bg-white p-0.5 flex items-center justify-center shadow-sm hover:scale-105 transition-transform duration-300">
+              <img src="/logo.jpg" alt="NIT Logo" className="w-full h-full object-contain rounded-full" />
             </div>
             <div>
-              <h1 className="text-xl font-extrabold text-slate-800 tracking-tight leading-tight">HOD Portal</h1>
-              <p className="text-xs text-slate-500 font-semibold tracking-wide uppercase mt-0.5">{user?.department} Dept</p>
+              <h1 className="text-lg font-black text-slate-800 tracking-tight leading-tight">NITify</h1>
+              <p className="text-[10px] text-purple-650 font-extrabold tracking-wide uppercase mt-0.5">HOD Portal</p>
             </div>
           </div>
           {/* Close button for mobile sidebar */}
@@ -135,7 +134,7 @@ function HODDashboard() {
       <main className="flex-1 flex flex-col h-screen overflow-hidden">
         {/* Top Header */}
         <header className="bg-white/80 backdrop-blur-md border-b border-slate-100 px-4 py-4 md:px-10 md:py-5 flex items-center justify-between z-10">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             {/* Hamburger Toggle */}
             <button 
               className="lg:hidden p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-slate-800 transition"
@@ -143,7 +142,18 @@ function HODDashboard() {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div>
+            
+            {/* Logo and App Name on Mobile View */}
+            <div className="flex items-center gap-2 lg:hidden">
+              <img src="/logo.jpg" alt="NIT Logo" className="w-8 h-8 object-contain rounded-full border border-slate-200 bg-white" />
+              <span className="text-base font-black bg-gradient-to-r from-blue-700 to-indigo-800 bg-clip-text text-transparent">NITify</span>
+              <span className="text-[9px] sm:text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md font-bold max-w-[100px] sm:max-w-[120px] truncate">
+                {menuItems.find(i => i.id === activeTab)?.label}
+              </span>
+            </div>
+
+            {/* Page title on Desktop View */}
+            <div className="hidden lg:block">
               <h2 className="text-lg md:text-2xl font-extrabold text-slate-800 leading-tight">
                 {menuItems.find(i => i.id === activeTab)?.label}
               </h2>
@@ -301,7 +311,7 @@ function HODDashboard() {
           })}
           {/* Approvals tab (index 6) */}
           {(() => {
-            const item = menuItems[6];
+            const item = menuItems[4];
             const Icon = item.icon;
             const isActive = activeTab === item.id;
             return (
@@ -315,7 +325,7 @@ function HODDashboard() {
                 }`}
               >
                 <Icon className={`w-5 h-5 ${isActive ? 'text-indigo-600 scale-105' : 'text-slate-400'}`} />
-                <span>Approvals</span>
+                <span>Reports</span>
               </button>
             );
           })()}
